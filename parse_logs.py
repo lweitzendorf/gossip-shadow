@@ -341,18 +341,9 @@ def plot_payload_traffic_by_node(plots_dir: str, json_data: list[tuple[int, dict
 def plot_message_delivery_times(plots_dir: str, json_data: list[tuple[int, dict]], source_locations: dict[int, str]) -> None:
     msg_send_data = json_data[-1][1]["message_sends"]
     msg_delivery_data = json_data[-1][1]["message_deliveries"]
-
-    plt.xlabel("Location")
-    plt.title("Message Latency by Source Location")
     
-    x = sorted(list(set(source_locations.values())))
-    y = [[] for _ in x]
-    
-    def peer_id_to_node_id(peer_id: str) -> int:
-        for node_id, pid in peer_ids.items():
-            if pid == peer_id:
-                return node_id
-        return -1
+    locations = sorted(list(set(source_locations.values())))
+    latencies = {location: [] for location in locations}
         
     message_ids = sorted([int(msg_id) for msg_id in msg_send_data.keys()])    
     for msg_id in tqdm(message_ids):
@@ -360,41 +351,25 @@ def plot_message_delivery_times(plots_dir: str, json_data: list[tuple[int, dict]
         source = msg_send_data[str(msg_id)][1]
         delivery_times = [parser.isoparse(ts) for pid, ts in msg_delivery_data[str(msg_id)].items() if pid != source]
         delivery_latencies = [ts - send_ts for ts in delivery_times if ts > send_ts]
-        x_index = x.index(source_locations[msg_id])
-        y[x_index].extend([t.total_seconds() for t in delivery_latencies])
-        
-        """
-        s = peer_id_to_node_id(source)
-        destinations = [peer_id_to_node_id(pid) for pid in msg_delivery_data[str(msg_id)].keys() if pid != source]
-        for d, t in zip(destinations, delivery_latencies):
-            latency_ms = t.total_seconds() * 1000
-            if latency_ms < 1:
-                print(f"MSG {msg_id}: {s} -> {d}, {latency_ms:.2f} ms")
-        """
-        
-    # x = [x[i] for i in range(len(x)) if len(y[i]) > 0]
-    # y = [y[i] for i in range(len(y)) if len(y[i]) > 0]
-        
-    # plt.ylabel("Time (milliseconds)")
-    #for i in range(len(y)):
-    #    plt.scatter(i + np.random.normal(scale=0.1, size=len(y[i])), y[i], s=2)
+        location = source_locations[msg_id]
+        latencies[location].extend([t.total_seconds() for t in delivery_latencies])
         
     min_latency = float('inf')
     max_latency = 0
-    plt.yscale('log')
+    
+    for location in latencies.keys():
+        x = np.sort(latencies[location])
+        y = [(j + 1) / len(x) for j in range(len(x))]
+        plt.plot(x, y, label=location)
+        min_latency = min(min_latency, x[0])
+        max_latency = max(max_latency, x[-1])
         
-    plt.ylabel("Time (seconds)")
-    for i in range(len(y)):
-        y_col = np.sort(y[i])
-        x_col = [i + ((j + 1) / len(y_col)) - 0.5 for j in range(len(y_col))]
-        plt.plot(x_col, y_col)
-        min_latency = min(min_latency, y_col[0])
-        max_latency = max(max_latency, y_col[-1])
-
-    # plt.boxplot(y)
-    plt.xticks(list(range(len(x))), x, rotation=20)
-    plt.xlim((-0.6, len(x) - 0.4))
-    plt.ylim((min_latency, max_latency))
+    plt.title("Message Latency by Source Location")
+    plt.xscale('log')
+    plt.xlabel("Time (seconds)")
+    plt.xlim((min_latency, max_latency))
+    plt.ylim(0, 1)
+    plt.legend(loc="upper left")
 
     plt.savefig(os.path.join(plots_dir, "message_latency.png"))
     plt.clf()
@@ -493,7 +468,7 @@ def generate_plots(test_dir: str, data_dir: str) -> str:
     source_locations = get_message_source_locations(test_dir)
 
     plot_total_network_traffic(plots_dir, json_data)
-    # plot_payload_traffic_by_node(plots_dir, json_data)
+    plot_payload_traffic_by_node(plots_dir, json_data)
     plot_message_delivery_times(plots_dir, json_data, source_locations)
     plot_message_delivery_percentiles(plots_dir, json_data)
 
