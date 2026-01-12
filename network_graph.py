@@ -41,9 +41,6 @@ na_west = Location("na_west", 1240)
 south_africa = Location("south_africa", 47)
 south_america = Location("south_america", 36)
 
-supernode = NodeType("supernode", 1024, 1024, 20)
-fullnode = NodeType("fullnode", 50, 50, 80)
-
 locations = [
     australia,
     europe,
@@ -132,15 +129,31 @@ def generate_graph(
 ):
     match network_type:
         case "uniform":
-            node_types = [supernode]
+            node_types = [NodeType("node", 1024, 1025, 100)]           
             for edge in edges:
                 edge.latency = 100  # override latency
         case "binary":
-            node_types = [supernode, fullnode]
+            node_types = [
+                NodeType("supernode", 1024, 1024, 50),
+                NodeType("fullnode", 32, 32, 50)
+            ]
         case "random":
             raise NotImplementedError("random network not implemented yet")
         case "real":
-            node_types = [supernode, fullnode]
+            node_types = [
+                NodeType("supernode", 10_000, 10_000, 5),
+                NodeType("fastnode", 1000, 250, 15),
+                NodeType("homenode", 100, 20, 75),
+                NodeType("slownode", 20, 5, 5)
+            ]
+        case "med-bandwidth":
+            node_types = [
+                NodeType("slownode", 20, 20, 100)
+            ]
+        case "low-bandwidth":
+            node_types = [
+                NodeType("slownode", 20, 5, 100)
+            ]
         case _:
             raise ValueError(f"Unknown network type: {network_type}")
     

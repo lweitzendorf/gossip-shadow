@@ -7,9 +7,11 @@ import heapq
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
+from tqdm import tqdm
 
 import yaml
 import pydot
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
@@ -23,7 +25,7 @@ meshes: dict[str, dict[str, set[str]]] = {}
 bytes_sent_payload: dict[str, int] = {}
 bytes_sent_control: dict[str, int] = {}
 
-msg_send_times: dict[int, str] = {}
+msg_send_times: dict[int, tuple[str, str]] = {}
 msg_delivery_times: dict[int, dict[str, str]] = defaultdict(dict)
 
 
@@ -59,7 +61,7 @@ def register_sent_bytes(node_id: str, num_bytes: int, is_payload: bool) -> None:
 
 def register_message_send(message_id: int, node_id: str, timestamp: str) -> None:
     if message_id not in msg_send_times:
-        msg_send_times[message_id] = timestamp
+        msg_send_times[message_id] = timestamp, node_id
     register_message_delivery(message_id, node_id, timestamp)
 
 def register_message_delivery(message_id: int, node_id: str, timestamp: str) -> None:
@@ -136,6 +138,9 @@ def save_snapshot(graph_dir: str, elapsed_time: Optional[timedelta], final: bool
         
 
 def parse_log_files(root_dir: str) -> Iterable[LogEntry]:
+    if not os.path.exists(root_dir):
+        raise FileNotFoundError(f"Directory '{root_dir}' does not exist")
+    
     root_dir = os.path.join(root_dir, "hosts")
     
     def parse_single_file(_node_idx: int, _file_path: str) -> Iterable[LogEntry]:
@@ -168,22 +173,24 @@ def parse_log_files(root_dir: str) -> Iterable[LogEntry]:
             heapq.heappush(heads, (head, iterator))
             
 
-def process_logs(test_dir: str, logs: Iterable[LogEntry], warmup_time: timedelta) -> str:
+def process_logs(logs: Iterable[LogEntry], warmup_time: timedelta, output_dir: str) -> None:
     snapshot_duration = timedelta(seconds=5)
     genesis_time = datetime(2000, 1, 1, tzinfo=timezone.utc)
     next_snapshot = max(warmup_time, snapshot_duration)
 
-    data_dir = os.path.join(test_dir, "data")
-    print(f"Creating {data_dir} ...")
-    if os.path.exists(data_dir):
-        shutil.rmtree(data_dir)
-    os.makedirs(data_dir)
+    print(f"Creating {output_dir} ...")
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    os.makedirs(output_dir)
     
     elapsed_time = None
 
-    for log in logs:
+    for i, log in enumerate(logs):
         node_idx = log.node
         elapsed_time = log.time - genesis_time
+        
+        if (i % 1_000_000) == 0:
+            print(f"Processed log entry {i:,} @ {elapsed_time}")
 
         match log["msg"]:
             case "PeerID":
@@ -207,8 +214,9 @@ def process_logs(test_dir: str, logs: Iterable[LogEntry], warmup_time: timedelta
             # case "Shutdown":
             #    remove_node(peer_ids[node_idx])
             # case "Publish":
-            #    register_message_send(log["id"], peer_ids[node_idx], get_time(log))
-            #    register_sent_bytes(peer_ids[node_idx], log["size"], True)
+            #    if elapsed_time >= warmup_time:
+            #        register_message_send(log["id"], peer_ids[node_idx], get_time(log))
+            #        register_sent_bytes(peer_ids[node_idx], log["size"], True)
             case "Sent Message":
                 if elapsed_time >= warmup_time:
                     register_message_send(log["id"], peer_ids[node_idx], get_time(log))
@@ -221,12 +229,10 @@ def process_logs(test_dir: str, logs: Iterable[LogEntry], warmup_time: timedelta
                     register_sent_bytes(peer_ids[node_idx], log["size"], False)
                 
         if (elapsed_time >= next_snapshot):
-            save_snapshot(data_dir, elapsed_time, final=False)
+            save_snapshot(output_dir, elapsed_time, final=False)
             next_snapshot += snapshot_duration
             
-    save_snapshot(data_dir, elapsed_time, final=True)
-
-    return data_dir
+    save_snapshot(output_dir, elapsed_time, final=True)
 
 
 def get_message_source_locations(test_dir: str) -> dict[int, str]:
@@ -251,15 +257,20 @@ def get_message_source_locations(test_dir: str) -> dict[int, str]:
         instructions = json.load(file)
 
     for instruction in instructions["script"]:
-        if instruction["type"] != "ifNodeIDEquals":
-            continue
-
-        node_id = instruction["nodeID"]
-        sub_instruction = instruction["instruction"]
-        if sub_instruction["type"] == "publish":
-            network_node_id = node_to_network_node[node_id]
-            node_location = G.nodes[network_node_id]["label"].split("-")[0]
-            source_locations[sub_instruction["messageID"]] = node_location
+        if instruction["type"] == "ifNodeIDEquals":
+            node_id = instruction["nodeID"]
+            sub_instruction = instruction["instruction"]
+            if sub_instruction["type"] == "publish":
+                network_node_id = node_to_network_node[node_id]
+                node_location = G.nodes[network_node_id]["label"].split("-")[0]
+                source_locations[sub_instruction["messageID"]] = node_location
+        elif instruction["type"] == "ifNodeIDIn":
+            for sub_instruction in instruction["instructions"]:
+                if sub_instruction["type"] == "publish":                
+                    for node_id in instruction["nodeIDs"]:
+                        network_node_id = node_to_network_node[node_id]
+                        node_location = G.nodes[network_node_id]["label"].split("-")[0]
+                        source_locations[sub_instruction["messageID"]] = node_location
             
     return source_locations
 
@@ -279,15 +290,18 @@ def plot_total_network_traffic(plots_dir: str, json_data: list[tuple[int, dict]]
         })
 
     plt.xlabel("Time (minutes)")
-    plt.ylabel("Traffic multiple")
-    plt.title("Multiple of Optimal Network Traffic")
+    # plt.ylabel("Traffic multiple")
+    plt.ylabel("Traffic")
+    # plt.title("Multiple of Optimal Network Traffic")
+    plt.title("Network Traffic")
     
     x_new = []
     y_new = []
     
     for i in range(1, len(y)):
         delta_payload = y[i]["payload"] - y[i-1]["payload"]
-        delta_optimal = y[i]["optimal"] - y[i-1]["optimal"]
+        # delta_optimal = y[i]["optimal"] - y[i-1]["optimal"]
+        delta_optimal = 1
         
         if (delta_optimal > 0) and (delta_payload > 0):
             x_new.append(x[i])
@@ -295,8 +309,8 @@ def plot_total_network_traffic(plots_dir: str, json_data: list[tuple[int, dict]]
             
     
     # plt.ylim(bottom=1)
-    # skip first data point to avoid large jump
-    plt.plot(x_new[1:], y_new[1:])
+    # skip first and last data point to avoid large jumps
+    plt.plot(x_new[1:-1], y_new[1:-1])
 
     plt.savefig(os.path.join(plots_dir, "network_traffic.png"))
     plt.clf()
@@ -328,36 +342,65 @@ def plot_message_delivery_times(plots_dir: str, json_data: list[tuple[int, dict]
     msg_send_data = json_data[-1][1]["message_sends"]
     msg_delivery_data = json_data[-1][1]["message_deliveries"]
 
-    plt.xlabel("Message ID")
-    plt.ylabel("Time (milliseconds)")
+    plt.xlabel("Location")
     plt.title("Message Latency by Source Location")
     
-    x = sorted(source_locations.values())
+    x = sorted(list(set(source_locations.values())))
     y = [[] for _ in x]
     
+    def peer_id_to_node_id(peer_id: str) -> int:
+        for node_id, pid in peer_ids.items():
+            if pid == peer_id:
+                return node_id
+        return -1
+        
     message_ids = sorted([int(msg_id) for msg_id in msg_send_data.keys()])    
-    for msg_id in message_ids:
-        send_ts = parser.isoparse(msg_send_data[str(msg_id)])
-        delivery_times = [parser.isoparse(ts) for ts in msg_delivery_data[str(msg_id)].values()]
-        delivery_times.sort()
-        delivery_latencies = [ts - send_ts for ts in delivery_times[1:]]
+    for msg_id in tqdm(message_ids):
+        send_ts = parser.isoparse(msg_send_data[str(msg_id)][0])
+        source = msg_send_data[str(msg_id)][1]
+        delivery_times = [parser.isoparse(ts) for pid, ts in msg_delivery_data[str(msg_id)].items() if pid != source]
+        delivery_latencies = [ts - send_ts for ts in delivery_times if ts > send_ts]
         x_index = x.index(source_locations[msg_id])
-        y[x_index].extend([t.total_seconds() * 1000 for t in delivery_latencies])
+        y[x_index].extend([t.total_seconds() for t in delivery_latencies])
         
-    x = [x[i] for i in range(len(x)) if len(y[i]) > 0]
-    y = [y[i] for i in range(len(y)) if len(y[i]) > 0]
+        """
+        s = peer_id_to_node_id(source)
+        destinations = [peer_id_to_node_id(pid) for pid in msg_delivery_data[str(msg_id)].keys() if pid != source]
+        for d, t in zip(destinations, delivery_latencies):
+            latency_ms = t.total_seconds() * 1000
+            if latency_ms < 1:
+                print(f"MSG {msg_id}: {s} -> {d}, {latency_ms:.2f} ms")
+        """
         
+    # x = [x[i] for i in range(len(x)) if len(y[i]) > 0]
+    # y = [y[i] for i in range(len(y)) if len(y[i]) > 0]
+        
+    # plt.ylabel("Time (milliseconds)")
+    #for i in range(len(y)):
+    #    plt.scatter(i + np.random.normal(scale=0.1, size=len(y[i])), y[i], s=2)
+        
+    min_latency = float('inf')
+    max_latency = 0
+    plt.yscale('log')
+        
+    plt.ylabel("Time (seconds)")
     for i in range(len(y)):
-        plt.scatter(i + np.random.normal(scale=0.1, size=len(y[i])), y[i], s=3)
+        y_col = np.sort(y[i])
+        x_col = [i + ((j + 1) / len(y_col)) - 0.5 for j in range(len(y_col))]
+        plt.plot(x_col, y_col)
+        min_latency = min(min_latency, y_col[0])
+        max_latency = max(max_latency, y_col[-1])
 
     # plt.boxplot(y)
     plt.xticks(list(range(len(x))), x, rotation=20)
-    plt.xlim((-0.5, len(x) - 0.5))
+    plt.xlim((-0.6, len(x) - 0.4))
+    plt.ylim((min_latency, max_latency))
 
     plt.savefig(os.path.join(plots_dir, "message_latency.png"))
     plt.clf()
     
     
+
 def plot_message_delivery_percentiles(plots_dir: str, json_data: list[tuple[int, dict]]) -> None:
     msg_send_data = json_data[-1][1]["message_sends"]
     msg_delivery_data = json_data[-1][1]["message_deliveries"]
@@ -376,22 +419,30 @@ def plot_message_delivery_percentiles(plots_dir: str, json_data: list[tuple[int,
         67: [],
         80: [],
         100: [],
-    }    
+    }
     
-    for msg_id in x:        
-        send_ts = parser.isoparse(msg_send_data[str(msg_id)])
+    x_to_remove = set()
+    
+    for msg_id in tqdm(x):
+        if str(msg_id) not in msg_send_data:
+            x_to_remove.add(msg_id)
+            continue
+        
+        send_ts = parser.isoparse(msg_send_data[str(msg_id)][0])
         delivery_times = [parser.isoparse(ts) for ts in msg_delivery_data[str(msg_id)].values()]
         delivery_times.sort()
         delivery_latencies = [ts - send_ts for ts in delivery_times]        
         delivery_latencies_ms = [t.total_seconds() * 1000 for t in delivery_latencies]
         
         if len(delivery_latencies_ms) <= 1:
-            x.remove(msg_id)
+            x_to_remove.add(msg_id)
             continue
         
         for percentile in y.keys():
             latency = np.percentile(delivery_latencies_ms, percentile)
             y[percentile].append(latency)
+            
+    x = [msg_id for msg_id in x if msg_id not in x_to_remove]
 
     plt.plot(x, y[100], color="tab:green", label="P100")
     plt.fill_between(x, y[100], color="tab:green")
@@ -442,26 +493,33 @@ def generate_plots(test_dir: str, data_dir: str) -> str:
     source_locations = get_message_source_locations(test_dir)
 
     plot_total_network_traffic(plots_dir, json_data)
-    plot_payload_traffic_by_node(plots_dir, json_data)
+    # plot_payload_traffic_by_node(plots_dir, json_data)
     plot_message_delivery_times(plots_dir, json_data, source_locations)
     plot_message_delivery_percentiles(plots_dir, json_data)
 
     return plots_dir
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Generate structured data and plots from simulation logs.")
+    parser.add_argument("-d", "--dir", type=str, required=True, help="Path to simulation output directory.")
+    parser.add_argument("-o", "--output-dir", type=str, default="data", help="Relative path to simulation directory to use for parsed data.")
+    parser.add_argument("-w", "--warmup-time", type=int, default=120, help="Warmup time in seconds to ignore initial logs.")
+    parser.add_argument("--use-previous-data", action="store_true", help="Use previously parsed data instead of re-parsing logs.")
+    return parser.parse_args()
 
 def main():
-    test_dir = sys.argv[1]
+    args = parse_args()
+    data_dir = os.path.join(args.dir, args.output_dir)
 
-    print("Parsing log files...")
-    logs = parse_log_files(test_dir)
-
-    print("Processing logs...")
-    warmup_time = timedelta(minutes=5) # TODO: make configurable
-    data_dir = process_logs(test_dir, logs, warmup_time)
-
-    # data_dir = os.path.join(test_dir, "data")
+    if not (args.use_previous_data and os.path.exists(data_dir)):
+        print("Parsing log files...")
+        logs = parse_log_files(args.dir)
+        print("Processing logs...")
+        warmup_time = timedelta(seconds=args.warmup_time)
+        process_logs(logs, warmup_time, data_dir)
+    
     print("Generating graphs...")
-    generate_plots(test_dir, data_dir)
+    generate_plots(args.dir, data_dir)
     
     print("Done.")
 

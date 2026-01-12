@@ -21,24 +21,32 @@ type ConnectInstruction struct {
 // isInstruction implements the ScriptInstruction interface
 func (ConnectInstruction) isInstruction() {}
 
-// IfNodeIDEqualsInstruction represents a conditional instruction based on node ID
-type IfNodeIDEqualsInstruction struct {
-	Type        string            `json:"type"`
-	NodeID      int               `json:"nodeID"`
-	Instruction ScriptInstruction `json:"instruction"`
+// IfNodeIDInInstruction represents conditional instructions based on node ID
+type IfNodeIDInInstruction struct {
+	Type         string              `json:"type"`
+	NodeIDs      []int               `json:"nodeIDs"`
+	Instructions []ScriptInstruction `json:"instructions"`
 }
 
 // isInstruction implements the ScriptInstruction interface
-func (IfNodeIDEqualsInstruction) isInstruction() {}
+func (IfNodeIDInInstruction) isInstruction() {}
 
 // WaitUntilInstruction represents a wait until instruction in the script
 type WaitUntilInstruction struct {
-	Type           string `json:"type"`
-	ElapsedMillis  int    `json:"elapsedMillis"`
+	Type          string `json:"type"`
+	ElapsedMillis int    `json:"elapsedMillis"`
 }
 
 // isInstruction implements the ScriptInstruction interface
 func (WaitUntilInstruction) isInstruction() {}
+
+// ShutDownInstruction represents a shutdown instruction in the script
+type ShutDownInstruction struct {
+	Type string `json:"type"`
+}
+
+// isInstruction implements the ScriptInstruction interface
+func (ShutDownInstruction) isInstruction() {}
 
 // PublishInstruction represents a publish instruction in the script
 type PublishInstruction struct {
@@ -98,30 +106,42 @@ func UnmarshalScriptInstruction(data []byte) (ScriptInstruction, error) {
 		}
 		return instruction, nil
 
-	case "ifNodeIDEquals":
+	case "ifNodeIDIn":
 		var tempInstruction struct {
-			Type        string          `json:"type"`
-			NodeID      int             `json:"nodeID"`
-			Instruction json.RawMessage `json:"instruction"`
+			Type         string            `json:"type"`
+			NodeIDs      []int             `json:"nodeIDs"`
+			Instructions []json.RawMessage `json:"instructions"`
 		}
 		if err := json.Unmarshal(data, &tempInstruction); err != nil {
 			return nil, err
 		}
 
-		// Recursively unmarshal the nested instruction
-		nestedInstruction, err := UnmarshalScriptInstruction(tempInstruction.Instruction)
-		if err != nil {
-			return nil, err
+		// Recursively unmarshal the nested instructions
+		var nestedInstructions = make([]ScriptInstruction, len(tempInstruction.Instructions))
+
+		for i, nestedTempInstruction := range tempInstruction.Instructions {
+			nestedInstruction, err := UnmarshalScriptInstruction(nestedTempInstruction)
+			if err != nil {
+				return nil, err
+			}
+			nestedInstructions[i] = nestedInstruction
 		}
 
-		return IfNodeIDEqualsInstruction{
-			Type:        tempInstruction.Type,
-			NodeID:      tempInstruction.NodeID,
-			Instruction: nestedInstruction,
+		return IfNodeIDInInstruction{
+			Type:         tempInstruction.Type,
+			NodeIDs:      tempInstruction.NodeIDs,
+			Instructions: nestedInstructions,
 		}, nil
 
 	case "waitUntil":
 		var instruction WaitUntilInstruction
+		if err := json.Unmarshal(data, &instruction); err != nil {
+			return nil, err
+		}
+		return instruction, nil
+
+	case "shutDown":
+		var instruction ShutDownInstruction
 		if err := json.Unmarshal(data, &instruction); err != nil {
 			return nil, err
 		}

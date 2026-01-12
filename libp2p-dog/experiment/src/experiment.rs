@@ -64,12 +64,14 @@ impl ScriptedNode {
                     "Node {} connected to peers", self.node_id
                 );
             }
-            ScriptInstruction::IfNodeIDEquals {
-                node_id,
-                instruction,
+            ScriptInstruction::IfNodeIDIn {
+                node_ids,
+                instructions,
             } => {
-                if node_id == self.node_id {
-                    Box::pin(self.run_instruction(*instruction)).await?;
+                if node_ids.contains(&self.node_id) {
+                    for instruction in instructions {
+                        Box::pin(self.run_instruction(*instruction)).await?;
+                    }
                 }
             }
             ScriptInstruction::WaitUntil { elapsed_millis } => {
@@ -104,6 +106,10 @@ impl ScriptedNode {
                     }
                 }
             }
+            ScriptInstruction::ShutDown { } => {
+                info!(self.stderr_logger, "Shutting down");
+                self.state.should_shutdown = true;
+            }
             ScriptInstruction::Publish {
                 message_id,
                 message_size_bytes,
@@ -130,6 +136,7 @@ impl ScriptedNode {
                     }
                 }
             }
+            ScriptInstruction::SubscribeToTopic { topic_id: _, } => {}
         }
 
         Ok(())
@@ -153,6 +160,9 @@ pub async fn run_experiment(
     );
     for instruction in params.script {
         node.run_instruction(instruction).await?;
+        if node.state.should_shutdown {
+            break
+        }
     }
     Ok(())
 }

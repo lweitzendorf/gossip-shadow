@@ -53,15 +53,24 @@ pub enum ScriptInstruction {
     #[serde(rename = "connect", rename_all = "camelCase")]
     Connect { connect_to: Vec<NodeID> },
 
-    #[serde(rename = "ifNodeIDEquals", rename_all = "camelCase")]
-    IfNodeIDEquals {
-        #[serde(rename = "nodeID")]
-        node_id: NodeID,
-        instruction: Box<ScriptInstruction>,
+    #[serde(rename = "ifNodeIDIn", rename_all = "camelCase")]
+    IfNodeIDIn {
+        #[serde(rename = "nodeIDs")]
+        node_ids: Vec<NodeID>,
+        instructions: Vec<Box<ScriptInstruction>>,
     },
 
     #[serde(rename = "waitUntil", rename_all = "camelCase")]
     WaitUntil { elapsed_millis: u64 },
+
+    #[serde(rename = "shutDown", rename_all = "camelCase")]
+    ShutDown { },
+
+    #[serde(rename = "subscribeToTopic", rename_all = "camelCase")]
+    SubscribeToTopic {
+        #[serde(rename = "topicID")]
+        topic_id: String
+    },
 
     #[serde(rename = "publish", rename_all = "camelCase")]
     Publish {
