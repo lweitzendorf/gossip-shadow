@@ -1,6 +1,5 @@
 import glob
 import os
-import sys
 import json
 import shutil
 import heapq
@@ -10,7 +9,6 @@ from typing import Iterable, Optional
 from tqdm import tqdm
 
 import yaml
-import pydot
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
@@ -141,6 +139,10 @@ def parse_log_files(root_dir: str) -> Iterable[LogEntry]:
     if not os.path.exists(root_dir):
         raise FileNotFoundError(f"Directory '{root_dir}' does not exist")
     
+    shadow_directory = os.path.join(root_dir, "shadow.data")
+    if os.path.exists(shadow_directory):
+        root_dir = shadow_directory
+        
     root_dir = os.path.join(root_dir, "hosts")
     
     def parse_single_file(_node_idx: int, _file_path: str) -> Iterable[LogEntry]:
@@ -253,24 +255,40 @@ def get_message_source_locations(test_dir: str) -> dict[int, str]:
         network_node_id = node_config["network_node_id"]
         node_to_network_node[node_id] = network_node_id
 
-    with open(os.path.join(test_dir, "params.json"), "r") as file:
-        instructions = json.load(file)
+    if os.path.exists(os.path.join(test_dir, "params.json")):
+        with open(os.path.join(test_dir, "params.json"), "r") as file:
+            instructions = json.load(file)
 
-    for instruction in instructions["script"]:
-        if instruction["type"] == "ifNodeIDEquals":
-            node_id = instruction["nodeID"]
-            sub_instruction = instruction["instruction"]
-            if sub_instruction["type"] == "publish":
-                network_node_id = node_to_network_node[node_id]
-                node_location = G.nodes[network_node_id]["label"].split("-")[0]
-                source_locations[sub_instruction["messageID"]] = node_location
-        elif instruction["type"] == "ifNodeIDIn":
-            for sub_instruction in instruction["instructions"]:
-                if sub_instruction["type"] == "publish":                
-                    for node_id in instruction["nodeIDs"]:
-                        network_node_id = node_to_network_node[node_id]
-                        node_location = G.nodes[network_node_id]["label"].split("-")[0]
-                        source_locations[sub_instruction["messageID"]] = node_location
+        for instruction in instructions["script"]:
+            if instruction["type"] == "ifNodeIDEquals":
+                node_id = instruction["nodeID"]
+                sub_instruction = instruction["instruction"]
+                if sub_instruction["type"] == "publish":
+                    network_node_id = node_to_network_node[node_id]
+                    node_location = G.nodes[network_node_id]["label"].split("-")[0]
+                    source_locations[sub_instruction["messageID"]] = node_location
+            elif instruction["type"] == "ifNodeIDIn":
+                for sub_instruction in instruction["instructions"]:
+                    if sub_instruction["type"] == "publish":                
+                        for node_id in instruction["nodeIDs"]:
+                            network_node_id = node_to_network_node[node_id]
+                            node_location = G.nodes[network_node_id]["label"].split("-")[0]
+                            source_locations[sub_instruction["messageID"]] = node_location
+    else:
+        for file_name in os.listdir(os.path.join(test_dir, "params")):
+            if not file_name.startswith("node") or not file_name.endswith(".json"):
+                continue
+            
+            node_id = int(file_name.removeprefix("node").removesuffix(".json"))
+            network_node_id = node_to_network_node[node_id]
+            node_location = G.nodes[network_node_id]["label"].split("-")[0]
+            
+            with open(os.path.join(test_dir, "params", file_name), "r") as file:
+                instructions = json.load(file)
+                
+            for instruction in instructions["script"]:
+                if instruction["type"] == "publish":
+                    source_locations[instruction["messageID"]] = node_location
             
     return source_locations
 

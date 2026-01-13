@@ -11,13 +11,6 @@ NodeID: TypeAlias = int
 class Connect(BaseModel):
     type: Literal["connect"] = "connect"
     connectTo: List[NodeID]
-    
-    
-class IfNodeIDIn(BaseModel):
-    type: Literal["ifNodeIDIn"] = "ifNodeIDIn"
-    nodeIDs: List[NodeID]
-    # Instructions to run if the NodeID is in the list above
-    instructions: List[ScriptInstruction]
 
 
 class WaitUntil(BaseModel):
@@ -29,16 +22,6 @@ class WaitUntil(BaseModel):
 
     type: Literal["waitUntil"] = "waitUntil"
     elapsedMillis: int  # Seconds elapsed since test start
-    
-
-class ShutDown(BaseModel):
-    """
-    Implementation must cleanly shut down the node when this instruction is reached.
-    They MUST NOT handle any more instructions after this one.
-    They MAY still still handle message delivery and forwarding as normal until fully shut down.
-    """
-
-    type: Literal["shutDown"] = "shutDown"
 
 
 class Publish(BaseModel):
@@ -161,6 +144,6 @@ class GossipSubParams(BaseModel):
 
 
 ScriptInstruction = Union[
-    Connect, IfNodeIDIn, WaitUntil, Publish, SubscribeToTopic,
-    SetTopicValidationDelay, InitGossipSub, ShutDown
+    Connect, WaitUntil, Publish, SubscribeToTopic,
+    SetTopicValidationDelay, InitGossipSub
 ]

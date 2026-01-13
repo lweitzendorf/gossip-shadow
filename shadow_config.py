@@ -3,6 +3,7 @@ import random
 from typing import List
 import networkx as nx
 import yaml
+import os
 
 
 G = nx.DiGraph()
@@ -120,11 +121,11 @@ edges = [
 ]
 
 
-def generate_graph(
+def generate_shadow_config(
     network_type: str,
     binary_paths: List[str],
-    graph_file_name: str,
-    shadow_yaml_file_name: str,
+    graph_file_path: str,
+    shadow_yaml_file_path: str,
     params_file_location: str,
 ):
     match network_type:
@@ -179,14 +180,14 @@ def generate_graph(
                     packet_loss=0.0,
                 )
 
-    with open(graph_file_name, "w") as file:
+    with open(graph_file_path, "w") as file:
         file.write("\n".join(nx.generate_gml(G)))
         file.close()
 
     with open("shadow.template.yaml", "r") as file:
         config = yaml.safe_load(file)
 
-    config["network"] = {"graph": {"type": "gml", "file": {"path": "graph.gml"}}}
+    config["network"] = {"graph": {"type": "gml", "file": {"path": graph_file_path}}}
 
     config["hosts"] = {}
 
@@ -196,11 +197,12 @@ def generate_graph(
             node_types, weights=[nt.weight for nt in node_types]
         )[0]
 
+        params_file_name = os.path.join(params_file_location, f"node{i}.json")
         config["hosts"][f"node{i}"] = {
             "network_node_id": ids[f"{location.name}-{node_type.name}"],
             "processes": [
                 {
-                    "args": f"--params {params_file_location}",
+                    "args": f"--params {params_file_name}",
                     # For Debugging:
                     "environment": {
                         # "GOLOG_LOG_LEVEL": "debug",
@@ -211,19 +213,5 @@ def generate_graph(
             ],
         }
 
-    """
-    num_nodes = len(binary_paths)
-    faulty_indices = random.sample(list(range(num_nodes)), k=num_nodes//2)
-    for i in faulty_indices:
-        stop_time = random.randint(0, 3600)
-        config["hosts"][f"node{i}"]["processes"][0] |= {
-            "shutdown_time" : f"{stop_time} sec",
-            "shutdown_signal" : "SIGTERM",
-            "expected_final_state": {
-                "signaled": "SIGTERM"
-            }
-        }
-    """
-
-    with open(shadow_yaml_file_name, "w") as file:
+    with open(shadow_yaml_file_path, "w") as file:
         yaml.dump(config, file)
