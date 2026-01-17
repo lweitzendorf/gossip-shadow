@@ -1,6 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
 import random
+import json
 from typing import List, Dict, Set, Optional
 
 import networkx as nx
@@ -18,7 +19,74 @@ class Binary:
 @dataclass
 class ExperimentParams:
     script: List[ScriptInstruction] = field(default_factory=list)
-
+    
+@dataclass
+class ExperimentState:
+    elapsed_time_ms: int = 0
+    next_message_id: int = 0
+    active_set: list[int] = field(default_factory=list)
+    ready_set: list[int] = field(default_factory=list)
+    
+class ExperimentPhase:
+    def __init__(
+        self,
+        state: ExperimentState,
+        warmup_time_ms: int,
+        cooldown_time_ms: int,
+    ):
+        self.state = state
+        self.warmup_time_ms = warmup_time_ms
+        self.cooldown_time_ms = cooldown_time_ms
+        self._main_phase: dict[int, list[ScriptInstruction]] = defaultdict(list)
+        self._main_phase_duration_ms: int = 0
+    
+    def _get_main_phase_end_time_ms(self) -> int:
+        return self.state.elapsed_time_ms + self.warmup_time_ms + self._main_phase_duration_ms
+    
+    def _get_end_time_ms(self) -> int:
+        return self._get_main_phase_end_time_ms() + self.cooldown_time_ms
+    
+    def add_message(self, delay_ms: int, topic: str, node_id: int, size_bytes: int) -> int:
+        if delay_ms >= 0:
+            self._main_phase_duration_ms += delay_ms
+            wait_instruction = script_instruction.WaitUntil(
+                elapsedMillis=self._get_main_phase_end_time_ms()
+            )
+            for node_id in self.state.active_set:
+                self._main_phase[node_id].append(wait_instruction)
+                
+        message_id = self.state.next_message_id
+        self.state.next_message_id += 1
+        publish_instruction = script_instruction.Publish(
+            messageID=self.state.next_message_id,
+            topicID=topic,
+            messageSizeBytes=size_bytes,
+        )
+        self._main_phase[node_id].append(publish_instruction)
+        return message_id
+            
+    def apply(self, state: ExperimentState, instructions: dict[int, list[ScriptInstruction]]) -> None:                
+        for node_id in self.state.active_set:
+            if node_id not in instructions:
+                instructions[node_id] = []
+            
+            if self.warmup_time_ms > 0:
+                instructions[node_id].append(
+                    script_instruction.WaitUntil(
+                        elapsedMillis=self.state.elapsed_time_ms + self.warmup_time_ms
+                    )
+                )
+            instructions[node_id].extend(self._main_phase[node_id])
+            if self.cooldown_time_ms > 0:
+                instructions[node_id].append(
+                    script_instruction.WaitUntil(
+                        elapsedMillis=self._get_end_time_ms()
+                    )
+                )
+        
+        state.elapsed_time_ms = self._get_end_time_ms()
+        state.next_message_id = self.state.next_message_id        
+        
 
 def scenario(protocol: str, scenario_name: str, node_count: int) -> tuple[dict[int, ExperimentParams], int]:
     instructions = {node_id: [] for node_id in range(node_count)}
@@ -159,8 +227,7 @@ def scenario(protocol: str, scenario_name: str, node_count: int) -> tuple[dict[i
             add_mapped_instructions(
                 all_publish_with_rolling_dropout(
                     node_count=node_count,
-                    topic_strs=topics,
-                    interval_ms=10
+                    topic_strs=topics
                 )
             )
         case _:
@@ -300,30 +367,26 @@ def all_publish(
 
 def all_publish_with_rolling_dropout(
         node_count: int,
-        topic_strs: List[str], 
-        interval_ms: int
+        topic_strs: List[str],
 ) -> dict[int, list[ScriptInstruction]]:
     instructions = {node_id: [] for node_id in range(node_count)}
 
+    interval_ms = 10
     message_size = 1024
-    # start dropping nodes after this many messages
-    dropout_start_msg = 10_000
-    # every this many messages, one node is replaced
-    dropout_period_msg = 500
-    # keep this many nodes active at a time
-    active_set_size = round(node_count // 5)
-    
-    num_messages = dropout_start_msg + (dropout_period_msg * (node_count)) + dropout_start_msg
-        
-    active_set = list(range(0, active_set_size))
-    ready_set = list(range(active_set_size, node_count))[::-1]
-    
+    active_set_size = 30
+    messages_per_phase = 1000
+    replacements_per_phase = 10
+            
+    experiment_state = ExperimentState(
+        active_set = list(range(0, active_set_size)),
+        ready_set = list(range(active_set_size, node_count))[::-1]
+    )
     number_of_conns_per_node = min(10, active_set_size - 1)
     
     def node_setup(_node_id: int) -> list[ScriptInstruction]:
         setup_instructions = []
-        candidates = [n for n in active_set if n != _node_id]
-        connections = random.sample(candidates, k=number_of_conns_per_node)
+        candidates = [n for n in experiment_state.active_set if n != _node_id]
+        connections = random.sample(candidates, k=min(number_of_conns_per_node, len(candidates)))
         setup_instructions.append(
             script_instruction.Connect(connectTo=connections)
         )
@@ -334,53 +397,110 @@ def all_publish_with_rolling_dropout(
         
         return setup_instructions
     
-    for node_id in active_set:
-        instructions[node_id].extend(node_setup(node_id))
+    for node_id in experiment_state.active_set:
+        instructions[node_id].extend(node_setup(node_id))        
+
+    startup_phase = ExperimentPhase(
+        state=experiment_state,
+        warmup_time_ms=120_000,
+        cooldown_time_ms=0
+    )
+    startup_phase.apply(experiment_state, instructions)
         
-    # Start at 120 seconds (2 minutes) to allow for setup time
-    elapsed_ms = 120_000
-    for node_id in instructions:
-        instructions[node_id].append(
-            script_instruction.WaitUntil(elapsedMillis=elapsed_ms)
+    num_initial_phases = 10
+    num_dropout_phases = len(experiment_state.ready_set) // replacements_per_phase
+    num_end_phases = 10
+    
+    warmup_time_ms = 30_000
+    cooldown_time_ms = 30_000
+    
+    phase_info = []
+    
+    # initial phases with no dropouts
+    for _ in range(num_initial_phases):
+        phase = ExperimentPhase(
+            state=experiment_state,
+            warmup_time_ms=warmup_time_ms,
+            cooldown_time_ms=cooldown_time_ms
         )
-    
-    publish_start_index: dict[int, int] = {}
-    dropped_nodes: set[int] = set()
-    
-    def instruct_all(_instructions: list[ScriptInstruction]):
-        for node_id in instructions:
-            if node_id not in dropped_nodes:
-                instructions[node_id].extend(_instructions)
-
-    print(f"Total messages to be published: {num_messages:,}")
-    for i in range(num_messages):
-        if (i >= dropout_start_msg) and (i % dropout_period_msg) == 0 and (len(ready_set) > 0):
-            dropout_node = active_set.pop(0)
-            dropped_nodes.add(dropout_node)
-            # no explicit shutdown instruction
-            # node will not receive further instructions
-            replacement_node = ready_set.pop()
-            instructions[replacement_node].extend(node_setup(replacement_node))
-            active_set.append(replacement_node)
-            publish_start_index[replacement_node] = i + dropout_period_msg
         
-        node_id = random.choice(active_set)
-        while i < publish_start_index.get(node_id, 0):
-            node_id = random.choice(active_set)
-        
-        for topic_str in topic_strs:   
-            instructions[node_id].append(
-                script_instruction.Publish(
-                    messageID=i,
-                    topicID=topic_str,
-                    messageSizeBytes=message_size,
-                )
+        message_ids = []
+        for _ in range(messages_per_phase):
+            node_id = random.choice(experiment_state.active_set)
+            topic = topic_strs[0]
+            message_id = phase.add_message(
+                delay_ms=interval_ms,
+                topic=topic,
+                node_id=node_id,
+                size_bytes=message_size
             )
+            message_ids.append(message_id)
             
-        elapsed_ms += interval_ms  # add interval for each subsequent message
-        instruct_all([script_instruction.WaitUntil(elapsedMillis=elapsed_ms)])
+        phase_info.append({
+            "active_nodes": experiment_state.active_set.copy(),
+            "message_ids": message_ids
+        })
+        phase.apply(experiment_state, instructions)
+                        
+    for _ in range(num_dropout_phases):
+        # node replacements
+        for _ in range(min(replacements_per_phase, len(experiment_state.ready_set))):
+            experiment_state.active_set.pop(0)
+            replacement_node = experiment_state.ready_set.pop()
+            experiment_state.active_set.append(replacement_node)
+            instructions[replacement_node].extend(node_setup(replacement_node))
 
-    elapsed_ms += 300_000  # wait 5 more minutes to allow all messages to flush
-    instruct_all([script_instruction.WaitUntil(elapsedMillis=elapsed_ms)])
-
+        phase = ExperimentPhase(
+            state=experiment_state,
+            warmup_time_ms=warmup_time_ms,
+            cooldown_time_ms=cooldown_time_ms
+        )
+        
+        message_ids = []
+        for _ in range(messages_per_phase):
+            node_id = random.choice(experiment_state.active_set)
+            topic = topic_strs[0]
+            message_id = phase.add_message(
+                delay_ms=interval_ms,
+                topic=topic,
+                node_id=node_id,
+                size_bytes=message_size
+            )
+            message_ids.append(message_id)
+            
+        phase_info.append({
+            "active_nodes": experiment_state.active_set.copy(),
+            "message_ids": message_ids
+        })
+        phase.apply(experiment_state, instructions)
+        
+    # final phases with no dropouts
+    for _ in range(num_end_phases):
+        phase = ExperimentPhase(
+            state=experiment_state,
+            warmup_time_ms=warmup_time_ms,
+            cooldown_time_ms=cooldown_time_ms
+        )
+        
+        message_ids = []
+        for _ in range(messages_per_phase):
+            node_id = random.choice(experiment_state.active_set)
+            topic = topic_strs[0]
+            message_id = phase.add_message(
+                delay_ms=interval_ms,
+                topic=topic,
+                node_id=node_id,
+                size_bytes=message_size
+            )
+            message_ids.append(message_id)
+            
+        phase_info.append({
+            "active_nodes": experiment_state.active_set.copy(),
+            "message_ids": message_ids
+        })
+        phase.apply(experiment_state, instructions)
+     
+    with open("phase_info.json", "w") as f:
+        json.dump(phase_info, f, indent=2)
+            
     return instructions

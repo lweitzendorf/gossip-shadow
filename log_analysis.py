@@ -213,12 +213,6 @@ def process_logs(logs: Iterable[LogEntry], warmup_time: timedelta, output_dir: s
                     register_sent_bytes(peer_ids[node_idx], log["size"], False)
             case "Received Prune":
                 remove_connection(log.get("topic", "default"), peer_ids[node_idx], log["from"])
-            # case "Shutdown":
-            #    remove_node(peer_ids[node_idx])
-            # case "Publish":
-            #    if elapsed_time >= warmup_time:
-            #        register_message_send(log["id"], peer_ids[node_idx], get_time(log))
-            #        register_sent_bytes(peer_ids[node_idx], log["size"], True)
             case "Sent Message":
                 if elapsed_time >= warmup_time:
                     register_message_send(log["id"], peer_ids[node_idx], get_time(log))
@@ -449,12 +443,45 @@ def plot_message_delivery_percentiles(plots_dir: str, json_data: list[tuple[int,
     plt.plot(x, y[33], color="tab:red", label="P33")
     plt.fill_between(x, y[33], color="tab:red")
     
-    plt.legend()
+    plt.legend(loc="upper left")
     
     plt.xlim(x[0], x[-1])
     plt.ylim(bottom=0)
 
     plt.savefig(os.path.join(plots_dir, "message_latency_percentiles.png"))
+    plt.clf()
+    
+def plot_median_delivery_histogram(plots_dir: str, json_data: list[tuple[int, dict]]) -> None:
+    msg_send_data = json_data[-1][1]["message_sends"]
+    msg_delivery_data = json_data[-1][1]["message_deliveries"]
+
+    plt.xlabel("Time (milliseconds)")
+    plt.ylabel("Message count")
+    plt.title("Median Message Delivery Times")
+    
+    x = []
+    message_ids = list(map(int, msg_delivery_data.keys()))
+
+    for msg_id in tqdm(message_ids):
+        if str(msg_id) not in msg_send_data:
+            continue
+        
+        send_ts = parser.isoparse(msg_send_data[str(msg_id)][0])
+        delivery_times = [parser.isoparse(ts) for ts in msg_delivery_data[str(msg_id)].values()]
+        delivery_times.sort()
+        delivery_latencies = [ts - send_ts for ts in delivery_times]        
+        delivery_latencies_ms = [t.total_seconds() * 1000 for t in delivery_latencies]
+        
+        if len(delivery_latencies_ms) <= 1:
+            continue
+        
+        median_latency = np.median(delivery_latencies_ms)
+        x.append(median_latency)
+
+    counts, bins = np.histogram(x)
+    plt.stairs(counts, bins)
+
+    plt.savefig(os.path.join(plots_dir, "median_latency_hist.png"))
     plt.clf()
 
 
@@ -485,6 +512,7 @@ def generate_plots(test_dir: str, data_dir: str) -> str:
     
     source_locations = get_message_source_locations(test_dir)
 
+    plot_median_delivery_histogram(plots_dir, json_data)
     plot_total_network_traffic(plots_dir, json_data)
     plot_payload_traffic_by_node(plots_dir, json_data)
     plot_message_delivery_times(plots_dir, json_data, source_locations)
