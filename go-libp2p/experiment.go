@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"slices"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -25,16 +24,15 @@ type HostConnector interface {
 }
 
 type scriptedNode struct {
-	nodeID         int
-	h              host.Host
-	logger         *log.Logger
-	slogger        *slog.Logger
-	connector      HostConnector
-	pubsub         *pubsub.PubSub
-	topics         map[string]*pubsub.Topic
-	startTime      time.Time
-	subCtx         context.Context
-	shouldShutDown bool
+	nodeID    int
+	h         host.Host
+	logger    *log.Logger
+	slogger   *slog.Logger
+	connector HostConnector
+	pubsub    *pubsub.PubSub
+	topics    map[string]*pubsub.Topic
+	startTime time.Time
+	subCtx    context.Context
 }
 
 func newScriptedNode(
@@ -49,14 +47,13 @@ func newScriptedNode(
 	slogger.Info("PeerID", "id", h.ID(), "node_id", nodeID)
 
 	n := &scriptedNode{
-		nodeID:         nodeID,
-		h:              h,
-		logger:         logger,
-		slogger:        slogger,
-		connector:      connector,
-		startTime:      startTime,
-		subCtx:         ctx,
-		shouldShutDown: false,
+		nodeID:    nodeID,
+		h:         h,
+		logger:    logger,
+		slogger:   slogger,
+		connector: connector,
+		startTime: startTime,
+		subCtx:    ctx,
 	}
 	return n, nil
 }
@@ -79,15 +76,6 @@ func (n *scriptedNode) runInstruction(ctx context.Context, instruction ScriptIns
 			}
 		}
 		n.logger.Printf("Node %d connected to %d peers", n.nodeID, len(n.h.Network().Peers()))
-	case IfNodeIDInInstruction:
-		if slices.Contains(a.NodeIDs, n.nodeID) {
-			for _, instruction := range a.Instructions {
-				err := n.runInstruction(ctx, instruction)
-				if err != nil {
-					return err
-				}
-			}
-		}
 	case WaitUntilInstruction:
 		targetTime := n.startTime.Add(time.Duration(a.ElapsedMillis) * time.Millisecond)
 		waitTime := time.Until(targetTime)
@@ -95,9 +83,6 @@ func (n *scriptedNode) runInstruction(ctx context.Context, instruction ScriptIns
 			n.logger.Printf("Waiting %s (until elapsed: %dms)", waitTime, a.ElapsedMillis)
 			time.Sleep(waitTime)
 		}
-	case ShutDownInstruction:
-		n.logger.Printf("Shutting down node %d", n.nodeID)
-		n.shouldShutDown = true
 	case PublishInstruction:
 		topic, err := n.getTopic(a.TopicID)
 		if err != nil {
@@ -179,9 +164,6 @@ func RunExperiment(ctx context.Context, startTime time.Time, logger *log.Logger,
 	for _, instruction := range params.Script {
 		if err := n.runInstruction(ctx, instruction); err != nil {
 			return fmt.Errorf("failed to run instruction: %w", err)
-		}
-		if n.shouldShutDown {
-			return nil
 		}
 	}
 

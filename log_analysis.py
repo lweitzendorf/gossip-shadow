@@ -176,7 +176,7 @@ def parse_log_files(root_dir: str) -> Iterable[LogEntry]:
             
 
 def process_logs(logs: Iterable[LogEntry], warmup_time: timedelta, output_dir: str) -> None:
-    snapshot_duration = timedelta(seconds=5)
+    snapshot_duration = timedelta(seconds=1)
     genesis_time = datetime(2000, 1, 1, tzinfo=timezone.utc)
     next_snapshot = max(warmup_time, snapshot_duration)
 
@@ -288,41 +288,27 @@ def get_message_source_locations(test_dir: str) -> dict[int, str]:
 
 
 def plot_total_network_traffic(plots_dir: str, json_data: list[tuple[int, dict]]) -> None:
-    x = [0]
-    y = [{"optimal": 0, "payload": 0, "control": 0}]
+    elapsed_micros = [0]
+    total_bandwidth = [0]
 
-    num_nodes = len(json_data[-1][1]["bytes_payload"].keys())
-
-    for total_minutes, data in json_data:
-        x.append(total_minutes)
-        y.append({
-            "optimal": (num_nodes - 1) * total_minutes * 5 * 1024,
-            "payload": sum(data["bytes_payload"].values()),
-            "control": sum(data["bytes_control"].values()),
-        })
+    for i, (total_microseconds, data) in enumerate(json_data):
+        elapsed_micros.append(total_microseconds)
+        total_bandwidth.append(sum(data["bytes_payload"].values()))
+      
+    x, y = [], []
+        
+    for i in range(1, len(total_bandwidth)):
+        delta_micros = elapsed_micros[i] - elapsed_micros[i-1]
+        delta_bytes = total_bandwidth[i] - total_bandwidth[i-1]
+        if delta_micros >= 10_000:
+            x.append(elapsed_micros[i] / 60_000_000) # minutes
+            y.append(8 * delta_bytes / delta_micros) # Mbps
 
     plt.xlabel("Time (minutes)")
-    # plt.ylabel("Traffic multiple")
-    plt.ylabel("Traffic")
-    # plt.title("Multiple of Optimal Network Traffic")
+    plt.ylabel("Traffic (Mbps)")
     plt.title("Network Traffic")
     
-    x_new = []
-    y_new = []
-    
-    for i in range(1, len(y)):
-        delta_payload = y[i]["payload"] - y[i-1]["payload"]
-        # delta_optimal = y[i]["optimal"] - y[i-1]["optimal"]
-        delta_optimal = 1
-        
-        if (delta_optimal > 0) and (delta_payload > 0):
-            x_new.append(x[i])
-            y_new.append(delta_payload / delta_optimal)
-            
-    
-    # plt.ylim(bottom=1)
-    # skip first and last data point to avoid large jumps
-    plt.plot(x_new[1:-1], y_new[1:-1])
+    plt.plot(x, y)
 
     plt.savefig(os.path.join(plots_dir, "network_traffic.png"))
     plt.clf()
@@ -371,10 +357,11 @@ def plot_message_delivery_times(plots_dir: str, json_data: list[tuple[int, dict]
     
     for location in latencies.keys():
         x = np.sort(latencies[location])
-        y = [(j + 1) / len(x) for j in range(len(x))]
-        plt.plot(x, y, label=location)
-        min_latency = min(min_latency, x[0])
-        max_latency = max(max_latency, x[-1])
+        if len(x) > 0:
+            y = [(j + 1) / len(x) for j in range(len(x))]
+            plt.plot(x, y, label=location)
+            min_latency = min(min_latency, x[0])
+            max_latency = max(max_latency, x[-1])
         
     plt.title("Message Latency by Source Location")
     plt.xscale('log')
@@ -418,7 +405,7 @@ def plot_message_delivery_percentiles(plots_dir: str, json_data: list[tuple[int,
         send_ts = parser.isoparse(msg_send_data[str(msg_id)][0])
         delivery_times = [parser.isoparse(ts) for ts in msg_delivery_data[str(msg_id)].values()]
         delivery_times.sort()
-        delivery_latencies = [ts - send_ts for ts in delivery_times]        
+        delivery_latencies = [ts - send_ts for ts in delivery_times[:50]]  # TODO: use active set info      
         delivery_latencies_ms = [t.total_seconds() * 1000 for t in delivery_latencies]
         
         if len(delivery_latencies_ms) <= 1:
@@ -469,7 +456,7 @@ def plot_median_delivery_histogram(plots_dir: str, json_data: list[tuple[int, di
         send_ts = parser.isoparse(msg_send_data[str(msg_id)][0])
         delivery_times = [parser.isoparse(ts) for ts in msg_delivery_data[str(msg_id)].values()]
         delivery_times.sort()
-        delivery_latencies = [ts - send_ts for ts in delivery_times]        
+        delivery_latencies = [ts - send_ts for ts in delivery_times[:50]]  # TODO: use active set info
         delivery_latencies_ms = [t.total_seconds() * 1000 for t in delivery_latencies]
         
         if len(delivery_latencies_ms) <= 1:
@@ -525,14 +512,14 @@ def parse_args():
     parser.add_argument("-d", "--dir", type=str, required=True, help="Path to simulation output directory.")
     parser.add_argument("-o", "--output-dir", type=str, default="data", help="Relative path to simulation directory to use for parsed data.")
     parser.add_argument("-w", "--warmup-time", type=int, default=120, help="Warmup time in seconds to ignore initial logs.")
-    parser.add_argument("--use-previous-data", action="store_true", help="Use previously parsed data instead of re-parsing logs.")
+    parser.add_argument("--use-existing-data", action="store_true", help="Use previously parsed data instead of re-parsing logs.")
     return parser.parse_args()
 
 def main():
     args = parse_args()
     data_dir = os.path.join(args.dir, args.output_dir)
 
-    if not (args.use_previous_data and os.path.exists(data_dir)):
+    if not (args.use_existing_data and os.path.exists(data_dir)):
         print("Parsing log files...")
         logs = parse_log_files(args.dir)
         print("Processing logs...")

@@ -52,8 +52,8 @@ class ExperimentPhase:
             wait_instruction = script_instruction.WaitUntil(
                 elapsedMillis=self._get_main_phase_end_time_ms()
             )
-            for node_id in self.state.active_set:
-                self._main_phase[node_id].append(wait_instruction)
+            for _node_id in self.state.active_set:
+                self._main_phase[_node_id].append(wait_instruction)
                 
         message_id = self.state.next_message_id
         self.state.next_message_id += 1
@@ -223,9 +223,16 @@ def scenario(protocol: str, scenario_name: str, node_count: int) -> tuple[dict[i
                     interval_ms=interval_ms
                 )
             )
-        case "dropout-random-rolling":
+        case "malicious-new-connections":
             add_mapped_instructions(
-                all_publish_with_rolling_dropout(
+                random_publish_malicious_new_connections(
+                    node_count=node_count,
+                    topic_strs=topics
+                )
+            )
+        case "rolling-churn":
+            add_mapped_instructions(
+                random_publish_node_churn(
                     node_count=node_count,
                     topic_strs=topics
                 )
@@ -365,28 +372,155 @@ def all_publish(
     
     return instructions
 
-def all_publish_with_rolling_dropout(
+def random_publish_malicious_new_connections(
         node_count: int,
         topic_strs: List[str],
 ) -> dict[int, list[ScriptInstruction]]:
     instructions = {node_id: [] for node_id in range(node_count)}
 
-    interval_ms = 10
-    message_size = 1024
-    active_set_size = 30
-    messages_per_phase = 1000
-    replacements_per_phase = 10
-            
+    interval_ms = 100
+    message_size = 4500
+    active_set_size = 50
+    messages_per_phase = 250
+
     experiment_state = ExperimentState(
         active_set = list(range(0, active_set_size)),
         ready_set = list(range(active_set_size, node_count))[::-1]
     )
-    number_of_conns_per_node = min(10, active_set_size - 1)
+    
+    def node_setup(_node_id: int, _num_connections: int) -> list[ScriptInstruction]:
+        setup_instructions = []
+        candidates = [n for n in experiment_state.active_set if n != _node_id]
+        connections = random.sample(candidates, k=min(_num_connections, len(candidates)))
+        if experiment_state.elapsed_time_ms > 0:
+            setup_instructions.append(
+                script_instruction.WaitUntil(
+                    elapsedMillis=experiment_state.elapsed_time_ms
+                )
+            )
+        setup_instructions.append(
+            script_instruction.Connect(connectTo=connections)
+        )
+        for topic in topic_strs:  
+            setup_instructions.append(
+                script_instruction.SubscribeToTopic(topicID=topic)
+            )
+        
+        return setup_instructions
+    
+    for node_id in experiment_state.active_set:
+        instructions[node_id].extend(node_setup(node_id, 8))        
+
+    startup_phase = ExperimentPhase(
+        state=experiment_state,
+        warmup_time_ms=120_000,
+        cooldown_time_ms=0
+    )
+    startup_phase.apply(experiment_state, instructions)    
+        
+    num_initial_phases = 15
+    num_end_phases = 30
+    
+    warmup_time_ms = 60_000
+    cooldown_time_ms = 60_000
+    
+    phase_info = []
+    
+    for _ in range(num_initial_phases):
+        phase = ExperimentPhase(
+            state=experiment_state,
+            warmup_time_ms=warmup_time_ms,
+            cooldown_time_ms=cooldown_time_ms
+        )
+        
+        message_ids = []
+        for _ in range(messages_per_phase):
+            node_id = random.choice(experiment_state.active_set)
+            topic = topic_strs[0]
+            message_id = phase.add_message(
+                delay_ms=interval_ms,
+                topic=topic,
+                node_id=node_id,
+                size_bytes=message_size
+            )
+            message_ids.append(message_id)
+            
+        phase_info.append({
+            "active_nodes": experiment_state.active_set.copy(),
+            "message_ids": message_ids
+        })
+        phase.apply(experiment_state, instructions)
+                     
+    # add malicious nodes
+    malicious_nodes = experiment_state.ready_set.copy()
+    experiment_state.ready_set.clear()
+    experiment_state.active_set.extend(malicious_nodes)
+    
+    # as many connections as possible
+    num_connections = len(experiment_state.active_set)
+    for new_node in malicious_nodes:
+        instructions[new_node].extend(node_setup(new_node, num_connections))
+        
+    for _ in range(num_end_phases):
+        phase = ExperimentPhase(
+            state=experiment_state,
+            warmup_time_ms=warmup_time_ms,
+            cooldown_time_ms=cooldown_time_ms
+        )
+        
+        message_ids = []
+        for _ in range(messages_per_phase):
+            node_id = random.choice(experiment_state.active_set)
+            topic = topic_strs[0]
+            message_id = phase.add_message(
+                delay_ms=interval_ms,
+                topic=topic,
+                node_id=node_id,
+                size_bytes=message_size
+            )
+            message_ids.append(message_id)
+            
+        phase_info.append({
+            "active_nodes": experiment_state.active_set.copy(),
+            "message_ids": message_ids
+        })
+        phase.apply(experiment_state, instructions)
+     
+    with open("phase_info.json", "w") as f:
+        json.dump(phase_info, f, indent=2)
+            
+    return instructions
+
+
+def random_publish_node_churn(
+        node_count: int,
+        topic_strs: List[str],
+) -> dict[int, list[ScriptInstruction]]:
+    instructions = {node_id: [] for node_id in range(node_count)}
+
+    interval_ms = 100
+    message_size = 1024
+    active_set_size = 50
+    messages_per_phase = 250
+    replacements_per_phase = 20
+
+    experiment_state = ExperimentState(
+        active_set = list(range(0, active_set_size)),
+        ready_set = list(range(active_set_size, node_count))[::-1]
+    )
+    
+    num_connections_per_node = 15
     
     def node_setup(_node_id: int) -> list[ScriptInstruction]:
         setup_instructions = []
         candidates = [n for n in experiment_state.active_set if n != _node_id]
-        connections = random.sample(candidates, k=min(number_of_conns_per_node, len(candidates)))
+        connections = random.sample(candidates, k=min(num_connections_per_node, len(candidates)))
+        if experiment_state.elapsed_time_ms > 0:
+            setup_instructions.append(
+                script_instruction.WaitUntil(
+                    elapsedMillis=experiment_state.elapsed_time_ms
+                )
+            )
         setup_instructions.append(
             script_instruction.Connect(connectTo=connections)
         )
@@ -405,18 +539,18 @@ def all_publish_with_rolling_dropout(
         warmup_time_ms=120_000,
         cooldown_time_ms=0
     )
-    startup_phase.apply(experiment_state, instructions)
+    startup_phase.apply(experiment_state, instructions)    
         
-    num_initial_phases = 10
-    num_dropout_phases = len(experiment_state.ready_set) // replacements_per_phase
-    num_end_phases = 10
+    num_initial_phases = 15
+    num_replacement_phases = len(experiment_state.ready_set) // replacements_per_phase
+    num_end_phases = 30
     
-    warmup_time_ms = 30_000
-    cooldown_time_ms = 30_000
+    warmup_time_ms = 60_000
+    cooldown_time_ms = 60_000
     
     phase_info = []
     
-    # initial phases with no dropouts
+    # initial phases with no churn
     for _ in range(num_initial_phases):
         phase = ExperimentPhase(
             state=experiment_state,
@@ -442,7 +576,7 @@ def all_publish_with_rolling_dropout(
         })
         phase.apply(experiment_state, instructions)
                         
-    for _ in range(num_dropout_phases):
+    for _ in range(num_replacement_phases):
         # node replacements
         for _ in range(min(replacements_per_phase, len(experiment_state.ready_set))):
             experiment_state.active_set.pop(0)
@@ -474,7 +608,7 @@ def all_publish_with_rolling_dropout(
         })
         phase.apply(experiment_state, instructions)
         
-    # final phases with no dropouts
+    # final phases with no churn
     for _ in range(num_end_phases):
         phase = ExperimentPhase(
             state=experiment_state,

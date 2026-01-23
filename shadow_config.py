@@ -130,7 +130,7 @@ def generate_shadow_config(
 ):
     match network_type:
         case "uniform":
-            node_types = [NodeType("node", 1024, 1025, 100)]           
+            node_types = [NodeType("node", 1024, 1024, 100)]         
             for edge in edges:
                 edge.latency = 100  # override latency
         case "binary":
@@ -151,6 +151,8 @@ def generate_shadow_config(
             node_types = [
                 NodeType("slownode", 20, 20, 100)
             ]
+            for edge in edges:
+                edge.latency = 20  # override latency
         case "low-bandwidth":
             node_types = [
                 NodeType("slownode", 20, 5, 100)

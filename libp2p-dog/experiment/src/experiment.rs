@@ -64,16 +64,6 @@ impl ScriptedNode {
                     "Node {} connected to peers", self.node_id
                 );
             }
-            ScriptInstruction::IfNodeIDIn {
-                node_ids,
-                instructions,
-            } => {
-                if node_ids.contains(&self.node_id) {
-                    for instruction in instructions {
-                        Box::pin(self.run_instruction(*instruction)).await?;
-                    }
-                }
-            }
             ScriptInstruction::WaitUntil { elapsed_millis } => {
                 let target_time = self.start_time + Duration::from_millis(elapsed_millis);
                 let now = Instant::now();
@@ -105,10 +95,6 @@ impl ScriptedNode {
                         }
                     }
                 }
-            }
-            ScriptInstruction::ShutDown { } => {
-                info!(self.stderr_logger, "Shutting down");
-                self.state.should_shutdown = true;
             }
             ScriptInstruction::Publish {
                 message_id,
