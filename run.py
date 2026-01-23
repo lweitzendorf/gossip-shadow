@@ -2,7 +2,9 @@
 from dataclasses import asdict
 import argparse
 import json
+import requests
 import os
+import socket
 import random
 import datetime
 import subprocess
@@ -10,6 +12,17 @@ from shadow_config import generate_shadow_config
 import experiment
 import log_analysis
 from tqdm import tqdm
+
+
+def send_discord_alert(message: str) -> None:
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        return
+
+    _ = requests.post(webhook_url, json={
+        "username": socket.gethostname(),
+        "content": message
+    })
 
 
 def main():
@@ -23,17 +36,19 @@ def main():
     parser.add_argument("--parallelism", type=int, required=False, default=24)
     parser.add_argument("--output-dir", type=str, required=False)
     args = parser.parse_args()
+    
+    try:
+        git_describe = subprocess.check_output(
+            ["git", "describe", "--always", "--dirty"]
+        ).decode("utf-8").strip()
+    except subprocess.CalledProcessError:
+        git_describe = "unknown"
+    
+    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    experiment_name = f"{args.node_count}-{args.network}-{args.scenario}-{args.protocol}---{args.seed}-{timestamp}-{git_describe}"
 
     if args.output_dir is None:
-        try:
-            git_describe = subprocess.check_output(
-                ["git", "describe", "--always", "--dirty"]
-            ).decode("utf-8").strip()
-        except subprocess.CalledProcessError:
-            git_describe = "unknown"
-
-        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        args.output_dir = f"{args.node_count}-{args.network}-{args.scenario}-{args.protocol}---{args.seed}-{timestamp}-{git_describe}.data"
+        args.output_dir = f"{experiment_name}.data"
 
     random.seed(args.seed)
 
@@ -80,20 +95,31 @@ def main():
 
     stop_time = time_sec * 12 // 10 # stop shadow if it runs 20% longer than expected
     shadow_data_dir = os.path.join(args.output_dir, "shadow.data")
-    subprocess.run(
-        ["shadow", "--parallelism", f"{args.parallelism}", "--stop-time", f"{stop_time}", "--progress", "true", "-d", shadow_data_dir, shadow_yaml_file_path],
-        check=True,
-    )
+    
+    try:
+        subprocess.run(
+            ["shadow", "--parallelism", f"{args.parallelism}", "--stop-time", f"{stop_time}", "--progress", "true", "-d", shadow_data_dir, shadow_yaml_file_path],
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        send_discord_alert(f"Simulation failed for {experiment_name}: {e}")
+        return
 
-    logs = log_analysis.parse_log_files(args.output_dir)
+    try:
+        logs = log_analysis.parse_log_files(args.output_dir)
 
-    print("Processing logs...")
-    warmup_time = datetime.timedelta(minutes=2)
-    data_dir = os.path.join(args.output_dir, "data")
-    log_analysis.process_logs(logs, warmup_time, data_dir)
+        print("Processing logs...")
+        warmup_time = datetime.timedelta(minutes=2)
+        data_dir = os.path.join(args.output_dir, "data")
+        log_analysis.process_logs(logs, warmup_time, data_dir)
 
-    print("Generating graphs...")
-    log_analysis.generate_plots(args.output_dir, data_dir)
+        print("Generating graphs...")
+        log_analysis.generate_plots(args.output_dir, data_dir)
+    except Exception as e:
+        send_discord_alert(f"Log processing failed for {experiment_name}: {e}")
+        return
+
+    send_discord_alert(f"Simulation run {experiment_name} complete!")
 
 
 if __name__ == "__main__":
