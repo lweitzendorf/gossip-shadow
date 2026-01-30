@@ -379,7 +379,7 @@ def random_publish_malicious_new_connections(
     instructions = {node_id: [] for node_id in range(node_count)}
 
     interval_ms = 100
-    message_size = 4500
+    message_size = 4400
     active_set_size = 50
     messages_per_phase = 250
 
@@ -452,14 +452,46 @@ def random_publish_malicious_new_connections(
         phase.apply(experiment_state, instructions)
                      
     # add malicious nodes
-    malicious_nodes = experiment_state.ready_set.copy()
-    experiment_state.ready_set.clear()
+    malicious_nodes = experiment_state.ready_set[:8]
+    experiment_state.ready_set = experiment_state.ready_set[8:]
     experiment_state.active_set.extend(malicious_nodes)
     
     # as many connections as possible
     num_connections = len(experiment_state.active_set)
     for new_node in malicious_nodes:
         instructions[new_node].extend(node_setup(new_node, num_connections))
+        
+    # try replacing nodes to sustain the higher bandwidth 
+    for _ in range(len(experiment_state.ready_set)):
+        phase = ExperimentPhase(
+            state=experiment_state,
+            warmup_time_ms=warmup_time_ms,
+            cooldown_time_ms=cooldown_time_ms
+        )
+        
+        message_ids = []
+        for _ in range(messages_per_phase):
+            node_id = random.choice(experiment_state.active_set)
+            topic = topic_strs[0]
+            message_id = phase.add_message(
+                delay_ms=interval_ms,
+                topic=topic,
+                node_id=node_id,
+                size_bytes=message_size
+            )
+            message_ids.append(message_id)
+            
+        phase_info.append({
+            "active_nodes": experiment_state.active_set.copy(),
+            "message_ids": message_ids
+        })
+        phase.apply(experiment_state, instructions)
+        
+        # cycle node after phase
+        new_node = experiment_state.ready_set.pop()
+        experiment_state.active_set.pop(-8)
+        experiment_state.active_set.append(new_node)
+        instructions[new_node].extend(node_setup(new_node, len(experiment_state.active_set)))
         
     for _ in range(num_end_phases):
         phase = ExperimentPhase(
@@ -502,14 +534,14 @@ def random_publish_node_churn(
     message_size = 1024
     active_set_size = 50
     messages_per_phase = 250
-    replacements_per_phase = 20
+    replacements_per_phase = 10
 
     experiment_state = ExperimentState(
         active_set = list(range(0, active_set_size)),
         ready_set = list(range(active_set_size, node_count))[::-1]
     )
     
-    num_connections_per_node = 15
+    num_connections_per_node = 10
     
     def node_setup(_node_id: int) -> list[ScriptInstruction]:
         setup_instructions = []
@@ -541,9 +573,9 @@ def random_publish_node_churn(
     )
     startup_phase.apply(experiment_state, instructions)    
         
-    num_initial_phases = 15
+    num_initial_phases = 30
     num_replacement_phases = len(experiment_state.ready_set) // replacements_per_phase
-    num_end_phases = 30
+    num_end_phases = 15
     
     warmup_time_ms = 60_000
     cooldown_time_ms = 60_000

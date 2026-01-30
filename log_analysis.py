@@ -148,10 +148,13 @@ def parse_log_files(root_dir: str) -> Iterable[LogEntry]:
     def parse_single_file(_node_idx: int, _file_path: str) -> Iterable[LogEntry]:
         with open(_file_path, 'r') as f:
             for log_line in f:
-                yield LogEntry(_node_idx, json.loads(log_line))
-                
-        # yield LogEntry(_node_idx, {"msg": "Shutdown", "time": get_time(logs[-1])})
-        
+                try:
+                    line_data = json.loads(log_line)
+                    yield LogEntry(_node_idx, line_data)
+                except json.decoder.JSONDecodeError as e:
+                    print(f"Failed to parse line in file {_file_path}: {log_line}")
+                    raise e
+                        
     heads = []            
 
     for node_dir in os.listdir(root_dir):
@@ -226,28 +229,14 @@ def process_logs(logs: Iterable[LogEntry], warmup_time: timedelta, output_dir: s
                 
         if (elapsed_time >= next_snapshot):
             save_snapshot(output_dir, elapsed_time, final=False)
-            next_snapshot += snapshot_duration
+            while elapsed_time >= next_snapshot:
+                next_snapshot += snapshot_duration
             
     save_snapshot(output_dir, elapsed_time, final=True)
 
 
-def get_message_source_locations(test_dir: str) -> dict[int, str]:
-    graph_file_path = os.path.join(test_dir, "graph.gml")
-    G = nx.read_gml(graph_file_path, label="id")
-
-    for _, _, data in G.edges(data=True):
-        data["latency"] = int(data["latency"].removesuffix(" ms"))
-    
-    node_to_network_node = {}
-    source_locations = {}    
-
-    with open(os.path.join(test_dir, "shadow.yaml"), "r") as file:
-        shadow_config = yaml.safe_load(file)
-
-    for node_name, node_config in shadow_config["hosts"].items():
-        node_id = int(node_name.removeprefix("node"))
-        network_node_id = node_config["network_node_id"]
-        node_to_network_node[node_id] = network_node_id
+def get_message_sources(test_dir: str) -> dict[int, int]:
+    message_sources = {}
 
     if os.path.exists(os.path.join(test_dir, "params.json")):
         with open(os.path.join(test_dir, "params.json"), "r") as file:
@@ -258,31 +247,52 @@ def get_message_source_locations(test_dir: str) -> dict[int, str]:
                 node_id = instruction["nodeID"]
                 sub_instruction = instruction["instruction"]
                 if sub_instruction["type"] == "publish":
-                    network_node_id = node_to_network_node[node_id]
-                    node_location = G.nodes[network_node_id]["label"].split("-")[0]
-                    source_locations[sub_instruction["messageID"]] = node_location
+                    message_sources[sub_instruction["messageID"]] = node_id
             elif instruction["type"] == "ifNodeIDIn":
                 for sub_instruction in instruction["instructions"]:
                     if sub_instruction["type"] == "publish":                
                         for node_id in instruction["nodeIDs"]:
-                            network_node_id = node_to_network_node[node_id]
-                            node_location = G.nodes[network_node_id]["label"].split("-")[0]
-                            source_locations[sub_instruction["messageID"]] = node_location
+                            message_sources[sub_instruction["messageID"]] = node_id
     else:
         for file_name in os.listdir(os.path.join(test_dir, "params")):
             if not file_name.startswith("node") or not file_name.endswith(".json"):
                 continue
             
-            node_id = int(file_name.removeprefix("node").removesuffix(".json"))
-            network_node_id = node_to_network_node[node_id]
-            node_location = G.nodes[network_node_id]["label"].split("-")[0]
-            
             with open(os.path.join(test_dir, "params", file_name), "r") as file:
                 instructions = json.load(file)
                 
+            node_id = int(file_name.removeprefix("node").removesuffix(".json"))
             for instruction in instructions["script"]:
                 if instruction["type"] == "publish":
-                    source_locations[instruction["messageID"]] = node_location
+                    message_sources[instruction["messageID"]] = node_id
+                    
+    return message_sources
+
+
+def get_message_source_locations(test_dir: str) -> dict[int, str]:
+    graph_file_path = os.path.join(test_dir, "graph.gml")
+    G = nx.read_gml(graph_file_path, label="id")
+
+    for _, _, data in G.edges(data=True):
+        data["latency"] = int(data["latency"].removesuffix(" ms"))
+    
+    node_to_network_node = {}
+
+    with open(os.path.join(test_dir, "shadow.yaml"), "r") as file:
+        shadow_config = yaml.safe_load(file)
+
+    for node_name, node_config in shadow_config["hosts"].items():
+        node_id = int(node_name.removeprefix("node"))
+        network_node_id = node_config["network_node_id"]
+        node_to_network_node[node_id] = network_node_id
+        
+    message_sources = get_message_sources(test_dir)
+    source_locations = {}    
+    
+    for msg_id, node_id in message_sources.items():
+        network_node_id = node_to_network_node[node_id]
+        node_location = G.nodes[network_node_id]["label"].split("-")[0]
+        source_locations[msg_id] = node_location
             
     return source_locations
 
@@ -395,17 +405,18 @@ def plot_message_delivery_percentiles(plots_dir: str, json_data: list[tuple[int,
         100: [],
     }
     
-    x_to_remove = set()
+    x_to_remove = set()    
     
     for msg_id in tqdm(x):
         if str(msg_id) not in msg_send_data:
             x_to_remove.add(msg_id)
             continue
         
+
         send_ts = parser.isoparse(msg_send_data[str(msg_id)][0])
         delivery_times = [parser.isoparse(ts) for ts in msg_delivery_data[str(msg_id)].values()]
         delivery_times.sort()
-        delivery_latencies = [ts - send_ts for ts in delivery_times[:50]]  # TODO: use active set info      
+        delivery_latencies = [ts - send_ts for ts in delivery_times]  # TODO: use active set info      
         delivery_latencies_ms = [t.total_seconds() * 1000 for t in delivery_latencies]
         
         if len(delivery_latencies_ms) <= 1:
@@ -418,25 +429,30 @@ def plot_message_delivery_percentiles(plots_dir: str, json_data: list[tuple[int,
             
     x = [msg_id for msg_id in x if msg_id not in x_to_remove]
 
-    plt.plot(x, y[100], color="tab:green", label="P100")
-    plt.fill_between(x, y[100], color="tab:green")
+    colors_1 = {
+        100: "tab:green",
+         80: "tab:olive",
+         67: "tab:orange",
+         33: "tab:red",
+    }    
+    colors_2 = {
+        67: "tab:olive",
+        50: "tab:orange",
+        33: "tab:red",
+    }
     
-    plt.plot(x, y[80], color="tab:olive", label="P80")
-    plt.fill_between(x, y[80], color="tab:olive")
-    
-    plt.plot(x, y[67], color="tab:orange", label="P67")
-    plt.fill_between(x, y[67], color="tab:orange")
-    
-    plt.plot(x, y[33], color="tab:red", label="P33")
-    plt.fill_between(x, y[33], color="tab:red")
-    
-    plt.legend(loc="upper left")
-    
-    plt.xlim(x[0], x[-1])
-    plt.ylim(bottom=0)
+    for i, colors in enumerate([colors_1, colors_2]):
+        for percentile, color in colors.items():
+            plt.plot(x, y[percentile], color=color, label=f"P{percentile}")
+            plt.fill_between(x, y[percentile], color=color)
+        
+        plt.legend(loc="upper left")
+        
+        plt.xlim(x[0], x[-1])
+        plt.ylim(bottom=0)
 
-    plt.savefig(os.path.join(plots_dir, "message_latency_percentiles.png"))
-    plt.clf()
+        plt.savefig(os.path.join(plots_dir, f"message_latency_percentiles_{i+1}.png"))
+        plt.clf()
     
 def plot_median_delivery_histogram(plots_dir: str, json_data: list[tuple[int, dict]]) -> None:
     msg_send_data = json_data[-1][1]["message_sends"]
@@ -456,7 +472,7 @@ def plot_median_delivery_histogram(plots_dir: str, json_data: list[tuple[int, di
         send_ts = parser.isoparse(msg_send_data[str(msg_id)][0])
         delivery_times = [parser.isoparse(ts) for ts in msg_delivery_data[str(msg_id)].values()]
         delivery_times.sort()
-        delivery_latencies = [ts - send_ts for ts in delivery_times[:50]]  # TODO: use active set info
+        delivery_latencies = [ts - send_ts for ts in delivery_times]  # TODO: use active set info
         delivery_latencies_ms = [t.total_seconds() * 1000 for t in delivery_latencies]
         
         if len(delivery_latencies_ms) <= 1:

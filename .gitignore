@@ -9,7 +9,6 @@ synctest*.data
 /**.tar.gz
 /pubsub-shadow
 **/gossipsub-bin
-params.json
 /venv
 **/plots
 .DS_Store
@@ -18,6 +17,6 @@ docker-compose.yml
 backup
 timelines
 experiment-results/**
-.parse-env
 __pycache__
 *.data/
+*.json
