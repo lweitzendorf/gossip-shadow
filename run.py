@@ -10,7 +10,7 @@ import datetime
 import subprocess
 from shadow_config import generate_shadow_config
 import experiment
-import log_analysis
+import analyze_logs
 from tqdm import tqdm
 
 
@@ -106,15 +106,15 @@ def main():
         return
 
     try:
-        logs = log_analysis.parse_log_files(args.output_dir)
+        logs = analyze_logs.parse_log_files(args.output_dir)
 
         print("Processing logs...")
-        warmup_time = datetime.timedelta(minutes=2)
         data_dir = os.path.join(args.output_dir, "data")
-        log_analysis.process_logs(logs, warmup_time, data_dir)
+        analyze_logs.process_logs(logs, data_dir)
 
         print("Generating graphs...")
-        log_analysis.generate_plots(args.output_dir, data_dir)
+        warmup_time = datetime.timedelta(minutes=2)
+        analyze_logs.generate_plots(args.output_dir, data_dir, warmup_time)
     except Exception as e:
         send_discord_alert(f"Log processing failed for {experiment_name}: {e}")
         return

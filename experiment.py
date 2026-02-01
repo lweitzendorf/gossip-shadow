@@ -211,8 +211,7 @@ def scenario(protocol: str, scenario_name: str, node_count: int) -> tuple[dict[i
             num_minutes = 5
             interval_ms = 33
             num_messages = num_minutes * 60 * round(1000 / interval_ms)
-            number_of_conns_per_node = min(8, node_count - 1)
-            add_mapped_instructions(random_network_mesh(node_count, number_of_conns_per_node))
+            add_mapped_instructions(random_network_mesh(node_count, 10))
             add_instructions(subscribe_to_topics())
             add_mapped_instructions(
                 all_publish(

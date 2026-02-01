@@ -178,10 +178,10 @@ def parse_log_files(root_dir: str) -> Iterable[LogEntry]:
             heapq.heappush(heads, (head, iterator))
             
 
-def process_logs(logs: Iterable[LogEntry], warmup_time: timedelta, output_dir: str) -> None:
+def process_logs(logs: Iterable[LogEntry], output_dir: str) -> None:
     snapshot_duration = timedelta(seconds=1)
     genesis_time = datetime(2000, 1, 1, tzinfo=timezone.utc)
-    next_snapshot = max(warmup_time, snapshot_duration)
+    next_snapshot = snapshot_duration
 
     print(f"Creating {output_dir} ...")
     if os.path.exists(output_dir):
@@ -202,8 +202,7 @@ def process_logs(logs: Iterable[LogEntry], warmup_time: timedelta, output_dir: s
                 peer_ids[node_idx] = log["id"]
             case "Sent Graft":
                 add_connection(log.get("topic", "default"), peer_ids[node_idx], log["to"])
-                if elapsed_time >= warmup_time:
-                    register_sent_bytes(peer_ids[node_idx], log["size"], False)
+                register_sent_bytes(peer_ids[node_idx], log["size"], False)
             case "Received Graft":
                 add_connection(log.get("topic", "default"), peer_ids[node_idx], log["from"])
             case "Added Peer":
@@ -212,20 +211,16 @@ def process_logs(logs: Iterable[LogEntry], warmup_time: timedelta, output_dir: s
                 remove_connection("default", peer_ids[node_idx], log["id"])
             case "Sent Prune":
                 remove_connection(log.get("topic", "default"), peer_ids[node_idx], log["to"])
-                if elapsed_time >= warmup_time:
-                    register_sent_bytes(peer_ids[node_idx], log["size"], False)
+                register_sent_bytes(peer_ids[node_idx], log["size"], False)
             case "Received Prune":
                 remove_connection(log.get("topic", "default"), peer_ids[node_idx], log["from"])
             case "Sent Message":
-                if elapsed_time >= warmup_time:
-                    register_message_send(log["id"], peer_ids[node_idx], get_time(log))
-                    register_sent_bytes(peer_ids[node_idx], log["size"], True)
+                register_message_send(log["id"], peer_ids[node_idx], get_time(log))
+                register_sent_bytes(peer_ids[node_idx], log["size"], True)
             case "Received Message":
-                if elapsed_time >= warmup_time:
-                    register_message_delivery(log["id"], peer_ids[node_idx], get_time(log))
+                register_message_delivery(log["id"], peer_ids[node_idx], get_time(log))
             case msg if msg.startswith("Sent"):
-                if elapsed_time >= warmup_time:
-                    register_sent_bytes(peer_ids[node_idx], log["size"], False)
+                register_sent_bytes(peer_ids[node_idx], log["size"], False)
                 
         if (elapsed_time >= next_snapshot):
             save_snapshot(output_dir, elapsed_time, final=False)
@@ -307,12 +302,14 @@ def plot_total_network_traffic(plots_dir: str, json_data: list[tuple[int, dict]]
       
     x, y = [], []
         
-    for i in range(1, len(total_bandwidth)):
-        delta_micros = elapsed_micros[i] - elapsed_micros[i-1]
-        delta_bytes = total_bandwidth[i] - total_bandwidth[i-1]
-        if delta_micros >= 10_000:
-            x.append(elapsed_micros[i] / 60_000_000) # minutes
+    i = 1
+    for j in range(i+1, len(total_bandwidth)):
+        delta_micros = elapsed_micros[j] - elapsed_micros[i]
+        delta_bytes = total_bandwidth[j] - total_bandwidth[i]
+        if (delta_micros >= 30_000_000):
+            x.append(elapsed_micros[j] / 60_000_000) # minutes
             y.append(8 * delta_bytes / delta_micros) # Mbps
+            i = j
 
     plt.xlabel("Time (minutes)")
     plt.ylabel("Traffic (Mbps)")
@@ -330,8 +327,8 @@ def plot_payload_traffic_by_node(plots_dir: str, json_data: list[tuple[int, dict
     x = []
     y = []
 
-    for total_minutes, data in json_data:
-        x.append(total_minutes)
+    for total_microseconds, data in json_data:
+        x.append(total_microseconds / 60_000_000)
         y.append({node_id: data["bytes_payload"].get(node_id, 0) for node_id in node_ids})
 
     plt.xlabel("Time (minutes)")
@@ -429,30 +426,24 @@ def plot_message_delivery_percentiles(plots_dir: str, json_data: list[tuple[int,
             
     x = [msg_id for msg_id in x if msg_id not in x_to_remove]
 
-    colors_1 = {
+    colors = {
         100: "tab:green",
          80: "tab:olive",
          67: "tab:orange",
          33: "tab:red",
     }    
-    colors_2 = {
-        67: "tab:olive",
-        50: "tab:orange",
-        33: "tab:red",
-    }
     
-    for i, colors in enumerate([colors_1, colors_2]):
-        for percentile, color in colors.items():
-            plt.plot(x, y[percentile], color=color, label=f"P{percentile}")
-            plt.fill_between(x, y[percentile], color=color)
-        
-        plt.legend(loc="upper left")
-        
-        plt.xlim(x[0], x[-1])
-        plt.ylim(bottom=0)
+    for percentile, color in colors.items():
+        plt.plot(x, y[percentile], color=color, label=f"P{percentile}")
+        plt.fill_between(x, y[percentile], color=color)
+    
+    plt.legend(loc="upper left")
+    
+    plt.xlim(x[0], x[-1])
+    plt.ylim(bottom=0)
 
-        plt.savefig(os.path.join(plots_dir, f"message_latency_percentiles_{i+1}.png"))
-        plt.clf()
+    plt.savefig(os.path.join(plots_dir, "message_latency_percentiles.png"))
+    plt.clf()
     
 def plot_median_delivery_histogram(plots_dir: str, json_data: list[tuple[int, dict]]) -> None:
     msg_send_data = json_data[-1][1]["message_sends"]
@@ -488,7 +479,7 @@ def plot_median_delivery_histogram(plots_dir: str, json_data: list[tuple[int, di
     plt.clf()
 
 
-def generate_plots(test_dir: str, data_dir: str) -> str:
+def generate_plots(test_dir: str, data_dir: str, warmup_time: timedelta) -> str:
     plots_dir = os.path.join(test_dir, "plots")
     os.makedirs(plots_dir, exist_ok=True)
 
@@ -507,6 +498,8 @@ def generate_plots(test_dir: str, data_dir: str) -> str:
             microseconds = 0
             
         total_microseconds = 1_000_000 * (60 * (60 * hours + minutes) + seconds) + microseconds
+        if timedelta(microseconds=total_microseconds) <= warmup_time:
+            continue
 
         with open(json_path, "r") as f:
             json_data[total_microseconds] = json.load(f)
@@ -533,17 +526,21 @@ def parse_args():
 
 def main():
     args = parse_args()
+    
+    if not os.path.exists(args.dir):
+        raise FileNotFoundError(f"{args.dir} does not exist")
+    
     data_dir = os.path.join(args.dir, args.output_dir)
-
+    warmup_time = timedelta(seconds=args.warmup_time)
+    
     if not (args.use_existing_data and os.path.exists(data_dir)):
         print("Parsing log files...")
         logs = parse_log_files(args.dir)
         print("Processing logs...")
-        warmup_time = timedelta(seconds=args.warmup_time)
-        process_logs(logs, warmup_time, data_dir)
+        process_logs(logs, data_dir)
     
     print("Generating graphs...")
-    generate_plots(args.dir, data_dir)
+    generate_plots(args.dir, data_dir, warmup_time)
     
     print("Done.")
 
