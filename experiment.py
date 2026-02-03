@@ -154,7 +154,7 @@ def scenario(protocol: str, scenario_name: str, node_count: int) -> tuple[dict[i
                 )
             )
         case "two-cliques":
-            degree = min(node_count // 20, 20)
+            degree = 6
             z = [degree for _ in range(node_count)]
             G = nx.expected_degree_graph(z)
 
@@ -378,7 +378,7 @@ def random_publish_malicious_new_connections(
     instructions = {node_id: [] for node_id in range(node_count)}
 
     interval_ms = 100
-    message_size = 4400
+    message_size = 4200
     active_set_size = 50
     messages_per_phase = 250
 
@@ -421,7 +421,6 @@ def random_publish_malicious_new_connections(
     num_end_phases = 30
     
     warmup_time_ms = 60_000
-    cooldown_time_ms = 60_000
     
     phase_info = []
     
@@ -429,7 +428,7 @@ def random_publish_malicious_new_connections(
         phase = ExperimentPhase(
             state=experiment_state,
             warmup_time_ms=warmup_time_ms,
-            cooldown_time_ms=cooldown_time_ms
+            cooldown_time_ms=60_000
         )
         
         message_ids = []
@@ -465,7 +464,7 @@ def random_publish_malicious_new_connections(
         phase = ExperimentPhase(
             state=experiment_state,
             warmup_time_ms=warmup_time_ms,
-            cooldown_time_ms=cooldown_time_ms
+            cooldown_time_ms=60_000
         )
         
         message_ids = []
@@ -496,7 +495,7 @@ def random_publish_malicious_new_connections(
         phase = ExperimentPhase(
             state=experiment_state,
             warmup_time_ms=warmup_time_ms,
-            cooldown_time_ms=cooldown_time_ms
+            cooldown_time_ms=300_000
         )
         
         message_ids = []

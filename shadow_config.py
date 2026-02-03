@@ -147,6 +147,10 @@ def generate_shadow_config(
                 NodeType("homenode", 100, 20, 75),
                 NodeType("slownode", 20, 5, 5)
             ]
+        case "faivre":
+            node_types = [
+                NodeType("server", 10_000, 10_000, 100)
+            ]
         case "med-bandwidth":
             node_types = [
                 NodeType("slownode", 20, 20, 100)

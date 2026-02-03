@@ -85,7 +85,7 @@ class LogEntry:
         return self.time < other.time
 
 
-def save_snapshot(graph_dir: str, elapsed_time: Optional[timedelta], final: bool) -> None:
+def save_snapshot(output_dir: str, elapsed_time: Optional[timedelta]) -> None:
     print(f"Taking snapshot @ {elapsed_time} ...")
     
     """
@@ -123,16 +123,9 @@ def save_snapshot(graph_dir: str, elapsed_time: Optional[timedelta], final: bool
         "bytes_payload": bytes_sent_payload,
         "bytes_control": bytes_sent_control,
     }
-    
-    if final:
-        snapshot_data |= {
-            "message_sends": msg_send_times,
-            "message_deliveries": msg_delivery_times
-        }
 
-    with open(os.path.join(graph_dir, f"{elapsed_time}.json"), 'w') as f:
-        json.dump(snapshot_data, f, indent=4)
-        
+    with open(os.path.join(output_dir, f"{elapsed_time}.json"), 'w') as f:
+        json.dump(snapshot_data, f, indent=2)
         
 
 def parse_log_files(root_dir: str) -> Iterable[LogEntry]:
@@ -179,14 +172,16 @@ def parse_log_files(root_dir: str) -> Iterable[LogEntry]:
             
 
 def process_logs(logs: Iterable[LogEntry], output_dir: str) -> None:
-    snapshot_duration = timedelta(seconds=1)
+    snapshot_duration = timedelta(seconds=5)
     genesis_time = datetime(2000, 1, 1, tzinfo=timezone.utc)
     next_snapshot = snapshot_duration
 
     print(f"Creating {output_dir} ...")
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
-    os.makedirs(output_dir)
+        
+    snapshot_dir = os.path.join(output_dir, "snapshots")
+    os.makedirs(snapshot_dir)
     
     elapsed_time = None
 
@@ -223,11 +218,24 @@ def process_logs(logs: Iterable[LogEntry], output_dir: str) -> None:
                 register_sent_bytes(peer_ids[node_idx], log["size"], False)
                 
         if (elapsed_time >= next_snapshot):
-            save_snapshot(output_dir, elapsed_time, final=False)
+            save_snapshot(snapshot_dir, elapsed_time)
             while elapsed_time >= next_snapshot:
                 next_snapshot += snapshot_duration
             
-    save_snapshot(output_dir, elapsed_time, final=True)
+    save_snapshot(snapshot_dir, elapsed_time)
+    
+    message_data = {}
+    
+    for msg_id in sorted(msg_send_times.keys()):
+        message_data[msg_id] = {
+            "source": msg_send_times[msg_id][1],
+            "sent": msg_send_times[msg_id][0],
+            "received": msg_delivery_times[msg_id]
+        }
+        
+    with open(os.path.join(output_dir, "messages.json"), 'w') as f:
+        json.dump(message_data, f, indent=2)
+    
 
 
 def get_message_sources(test_dir: str) -> dict[int, int]:
@@ -343,21 +351,13 @@ def plot_payload_traffic_by_node(plots_dir: str, json_data: list[tuple[int, dict
     plt.clf()
 
 
-def plot_message_delivery_times(plots_dir: str, json_data: list[tuple[int, dict]], source_locations: dict[int, str]) -> None:
-    msg_send_data = json_data[-1][1]["message_sends"]
-    msg_delivery_data = json_data[-1][1]["message_deliveries"]
-    
+def plot_message_delivery_times(plots_dir: str, delivery_latencies_ms: list[tuple[int, list[float]]], source_locations: dict[int, str]) -> None:
     locations = sorted(list(set(source_locations.values())))
     latencies = {location: [] for location in locations}
         
-    message_ids = sorted([int(msg_id) for msg_id in msg_send_data.keys()])    
-    for msg_id in tqdm(message_ids):
-        send_ts = parser.isoparse(msg_send_data[str(msg_id)][0])
-        source = msg_send_data[str(msg_id)][1]
-        delivery_times = [parser.isoparse(ts) for pid, ts in msg_delivery_data[str(msg_id)].items() if pid != source]
-        delivery_latencies = [ts - send_ts for ts in delivery_times if ts > send_ts]
+    for msg_id, msg_latencies in delivery_latencies_ms:
         location = source_locations[msg_id]
-        latencies[location].extend([t.total_seconds() for t in delivery_latencies])
+        latencies[location].extend(msg_latencies)
         
     min_latency = float('inf')
     max_latency = 0
@@ -382,17 +382,14 @@ def plot_message_delivery_times(plots_dir: str, json_data: list[tuple[int, dict]
     
     
 
-def plot_message_delivery_percentiles(plots_dir: str, json_data: list[tuple[int, dict]]) -> None:
-    msg_send_data = json_data[-1][1]["message_sends"]
-    msg_delivery_data = json_data[-1][1]["message_deliveries"]
-
+def plot_message_delivery_percentiles(plots_dir: str, delivery_latencies_ms: list[tuple[int, list[float]]]) -> None:
     plt.xlabel("Message ID")
     plt.ylabel("Time (milliseconds)")
     plt.title("Message Delivery Percentiles")
     
     plt.gca().xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
-    x = sorted([int(msg_id) for msg_id in msg_delivery_data.keys()])
+    x = []
     y = {
         20: [],
         33: [],
@@ -401,31 +398,13 @@ def plot_message_delivery_percentiles(plots_dir: str, json_data: list[tuple[int,
         80: [],
         100: [],
     }
-    
-    x_to_remove = set()    
-    
-    for msg_id in tqdm(x):
-        if str(msg_id) not in msg_send_data:
-            x_to_remove.add(msg_id)
-            continue
         
-
-        send_ts = parser.isoparse(msg_send_data[str(msg_id)][0])
-        delivery_times = [parser.isoparse(ts) for ts in msg_delivery_data[str(msg_id)].values()]
-        delivery_times.sort()
-        delivery_latencies = [ts - send_ts for ts in delivery_times]  # TODO: use active set info      
-        delivery_latencies_ms = [t.total_seconds() * 1000 for t in delivery_latencies]
-        
-        if len(delivery_latencies_ms) <= 1:
-            x_to_remove.add(msg_id)
-            continue
-        
+    for msg_id, msg_latencies in delivery_latencies_ms:
+        x.append(msg_id)
         for percentile in y.keys():
-            latency = np.percentile(delivery_latencies_ms, percentile)
+            latency = np.percentile(msg_latencies, percentile)
             y[percentile].append(latency)
             
-    x = [msg_id for msg_id in x if msg_id not in x_to_remove]
-
     colors = {
         100: "tab:green",
          80: "tab:olive",
@@ -445,34 +424,17 @@ def plot_message_delivery_percentiles(plots_dir: str, json_data: list[tuple[int,
     plt.savefig(os.path.join(plots_dir, "message_latency_percentiles.png"))
     plt.clf()
     
-def plot_median_delivery_histogram(plots_dir: str, json_data: list[tuple[int, dict]]) -> None:
-    msg_send_data = json_data[-1][1]["message_sends"]
-    msg_delivery_data = json_data[-1][1]["message_deliveries"]
-
+def plot_median_delivery_histogram(plots_dir: str, delivery_latencies_ms: list[tuple[int, list[float]]]) -> None:
     plt.xlabel("Time (milliseconds)")
     plt.ylabel("Message count")
     plt.title("Median Message Delivery Times")
     
     x = []
-    message_ids = list(map(int, msg_delivery_data.keys()))
-
-    for msg_id in tqdm(message_ids):
-        if str(msg_id) not in msg_send_data:
-            continue
-        
-        send_ts = parser.isoparse(msg_send_data[str(msg_id)][0])
-        delivery_times = [parser.isoparse(ts) for ts in msg_delivery_data[str(msg_id)].values()]
-        delivery_times.sort()
-        delivery_latencies = [ts - send_ts for ts in delivery_times]  # TODO: use active set info
-        delivery_latencies_ms = [t.total_seconds() * 1000 for t in delivery_latencies]
-        
-        if len(delivery_latencies_ms) <= 1:
-            continue
-        
-        median_latency = np.median(delivery_latencies_ms)
+    for _, msg_latencies in delivery_latencies_ms:
+        median_latency = np.median(msg_latencies)
         x.append(median_latency)
 
-    counts, bins = np.histogram(x)
+    counts, bins = np.histogram(x, bins=30)
     plt.stairs(counts, bins)
 
     plt.savefig(os.path.join(plots_dir, "median_latency_hist.png"))
@@ -483,11 +445,11 @@ def generate_plots(test_dir: str, data_dir: str, warmup_time: timedelta) -> str:
     plots_dir = os.path.join(test_dir, "plots")
     os.makedirs(plots_dir, exist_ok=True)
 
-    json_data = {}
-
-    for json_path in glob.glob(os.path.join(data_dir, "*.json")):
-        file_name = os.path.basename(json_path)
-
+    snapshot_data = {}
+    
+    snapshot_files = glob.glob(os.path.join(data_dir, "snapshots", "*.json"))
+    for file_path in tqdm(snapshot_files, "Parsing data snapshots"):
+        file_name = os.path.basename(file_path)
         hours = int(file_name.split(":")[0])
         minutes = int(file_name.split(":")[1])
         seconds = int(file_name.split(":")[2].split(".")[0])
@@ -501,18 +463,33 @@ def generate_plots(test_dir: str, data_dir: str, warmup_time: timedelta) -> str:
         if timedelta(microseconds=total_microseconds) <= warmup_time:
             continue
 
-        with open(json_path, "r") as f:
-            json_data[total_microseconds] = json.load(f)
-
-    json_data = sorted(json_data.items())   
+        with open(file_path, 'r') as f:
+            snapshot_data[total_microseconds] = json.load(f)
     
     source_locations = get_message_source_locations(test_dir)
+    snapshot_data = sorted(snapshot_data.items())
+    
+    with open(os.path.join(data_dir, "messages.json"), 'r') as f:
+        messages_data = json.load(f)
+    
+    msg_delivery_latencies: list[tuple[int, list[float]]] = []
 
-    plot_median_delivery_histogram(plots_dir, json_data)
-    plot_total_network_traffic(plots_dir, json_data)
-    plot_payload_traffic_by_node(plots_dir, json_data)
-    plot_message_delivery_times(plots_dir, json_data, source_locations)
-    plot_message_delivery_percentiles(plots_dir, json_data)
+    for msg_id, msg_data in tqdm(messages_data.items(), desc="Calculating message delivery times"):        
+        send_ts = parser.isoparse(msg_data["sent"])
+        delivery_times = [parser.isoparse(ts) for ts in msg_data["received"].values()]
+        delivery_times.sort()
+        delivery_latencies = [ts - send_ts for ts in delivery_times if ts > send_ts]  # TODO: use active set info
+        delivery_latencies_ms = [t.total_seconds() * 1000 for t in delivery_latencies]
+        
+        if len(delivery_latencies_ms) > 1:
+            msg_delivery_latencies.append((int(msg_id), delivery_latencies_ms))
+
+    plot_total_network_traffic(plots_dir, snapshot_data)
+    plot_payload_traffic_by_node(plots_dir, snapshot_data)
+    
+    plot_median_delivery_histogram(plots_dir, msg_delivery_latencies)
+    plot_message_delivery_times(plots_dir, msg_delivery_latencies, source_locations)
+    plot_message_delivery_percentiles(plots_dir, msg_delivery_latencies)
 
     return plots_dir
 
