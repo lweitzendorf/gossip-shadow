@@ -18,16 +18,19 @@ import networkx as nx
 from dateutil import parser
 
 
-peer_ids: dict[int, str] = {}
-meshes: dict[str, dict[str, set[str]]] = {}
-bytes_sent_payload: dict[str, int] = {}
-bytes_sent_control: dict[str, int] = {}
+peer_ids: dict[str, int] = {}
+meshes: dict[str, dict[int, set[int]]] = {}
 
-msg_send_times: dict[int, tuple[str, str]] = {}
-msg_delivery_times: dict[int, dict[str, str]] = defaultdict(dict)
+bytes_sent_payload: dict[int, int] = {}
+bytes_received_payload: dict[int, int] = {}
+bytes_sent_control: dict[int, int] = {}
+bytes_received_control: dict[int, int] = {}
+
+msg_send_times: dict[int, tuple[str, int]] = {}
+msg_delivery_times: dict[int, dict[int, str]] = defaultdict(dict)
 
 
-def add_connection(topic: str, from_id: str, to_id: str) -> None:
+def add_connection(topic: str, from_id: int, to_id: int) -> None:
     if topic not in meshes:
         meshes[topic] = {}
 
@@ -38,7 +41,7 @@ def add_connection(topic: str, from_id: str, to_id: str) -> None:
 
     mesh[from_id].add(to_id)
 
-def remove_connection(topic: str, from_id: str, to_id: str) -> None:
+def remove_connection(topic: str, from_id: int, to_id: int) -> None:
     if not (mesh := meshes.get(topic)):
         return
 
@@ -53,16 +56,20 @@ def remove_node(node_id: str):
         if node_id in mesh:
             mesh.pop(node_id)
             
-def register_sent_bytes(node_id: str, num_bytes: int, is_payload: bool) -> None:
+def register_sent_bytes(node_id: int, num_bytes: int, is_payload: bool) -> None:
     bytes_sent = bytes_sent_payload if is_payload else bytes_sent_control
     bytes_sent[node_id] = bytes_sent.get(node_id, 0) + num_bytes
+    
+def register_received_bytes(node_id: int, num_bytes: int, is_payload: bool) -> None:
+    bytes_received = bytes_received_payload if is_payload else bytes_received_control
+    bytes_received[node_id] = bytes_received.get(node_id, 0) + num_bytes
 
-def register_message_send(message_id: int, node_id: str, timestamp: str) -> None:
+def register_message_send(message_id: int, node_id: int, timestamp: str) -> None:
     if message_id not in msg_send_times:
         msg_send_times[message_id] = timestamp, node_id
     register_message_delivery(message_id, node_id, timestamp)
 
-def register_message_delivery(message_id: int, node_id: str, timestamp: str) -> None:
+def register_message_delivery(message_id: int, node_id: int, timestamp: str) -> None:
     if (node_id not in msg_delivery_times[message_id]):
         msg_delivery_times[message_id][node_id] = timestamp
             
@@ -87,43 +94,25 @@ class LogEntry:
 
 def save_snapshot(output_dir: str, elapsed_time: Optional[timedelta]) -> None:
     print(f"Taking snapshot @ {elapsed_time} ...")
+
+    all_node_idxs = (
+        set(bytes_received_payload.keys()) | set(bytes_received_control.keys()) | 
+        set(bytes_sent_payload.keys()) | set(bytes_sent_control.keys())
+    )
+    snapshot_data = {"nodes": {}}
     
-    """
-    for topic, mesh in meshes.items():
-        graph = pydot.Dot(topic, graph_type="digraph")
-
-        for idx, peer_id in peer_ids.items():
-            node = pydot.Node(peer_id, label=str(idx))
-            graph.add_node(node)
-
-        for from_id, to_ids in mesh.items():
-            for to_id in to_ids:
-                edge = pydot.Edge(from_id, to_id)
-                graph.add_edge(edge)
-
-        topic_dir = os.path.join(graph_dir, topic)
-        os.makedirs(topic_dir, exist_ok=True)
-        file_name = f"{str(elapsed_time).replace(':', '-')}.dot"
-        file_path = os.path.join(topic_dir, file_name)
-
-        with open(file_path, 'w') as f:
-            f.write(graph.to_string())
-
-        file_path = os.path.join(topic_dir, f"{elapsed_time}.png")
-
-        degrees = [len(to_ids) for to_ids in mesh.values()]
-        counts, bins = np.histogram(degrees)
-        plt.title(f"Degree distribution after {elapsed_time}")
-        plt.hist(bins[:-1], bins, weights=counts)
-        plt.savefig(file_path)
-        plt.clf()
-    """
-
-    snapshot_data = {
-        "bytes_payload": bytes_sent_payload,
-        "bytes_control": bytes_sent_control,
-    }
-
+    for node_idx in all_node_idxs:
+        snapshot_data["nodes"][node_idx] = {
+            "bytes_up": {
+                "payload": bytes_sent_payload.get(node_idx, 0),
+                "control": bytes_sent_control.get(node_idx, 0),
+            },
+            "bytes_down": {
+                "payload": bytes_received_payload.get(node_idx, 0),
+                "control": bytes_received_control.get(node_idx, 0),
+            }
+        }
+    
     with open(os.path.join(output_dir, f"{elapsed_time}.json"), 'w') as f:
         json.dump(snapshot_data, f, indent=2)
         
@@ -194,28 +183,33 @@ def process_logs(logs: Iterable[LogEntry], output_dir: str) -> None:
 
         match log["msg"]:
             case "PeerID":
-                peer_ids[node_idx] = log["id"]
+                peer_ids[log["id"]] = node_idx
             case "Sent Graft":
-                add_connection(log.get("topic", "default"), peer_ids[node_idx], log["to"])
-                register_sent_bytes(peer_ids[node_idx], log["size"], False)
+                add_connection(log.get("topic", "default"), node_idx, peer_ids[log["to"]])
+                register_sent_bytes(node_idx, log["size"], False)
             case "Received Graft":
-                add_connection(log.get("topic", "default"), peer_ids[node_idx], log["from"])
+                add_connection(log.get("topic", "default"), node_idx, peer_ids[log["from"]])
+                register_received_bytes(node_idx, log["size"], False)
             case "Added Peer":
-                add_connection("default", peer_ids[node_idx], log["id"])
+                add_connection("default",node_idx, log["id"])
             case "Removed Peer":
-                remove_connection("default", peer_ids[node_idx], log["id"])
+                remove_connection("default", node_idx, log["id"])
             case "Sent Prune":
-                remove_connection(log.get("topic", "default"), peer_ids[node_idx], log["to"])
-                register_sent_bytes(peer_ids[node_idx], log["size"], False)
+                remove_connection(log.get("topic", "default"), node_idx, peer_ids[log["to"]])
+                register_sent_bytes(node_idx, log["size"], False)
             case "Received Prune":
-                remove_connection(log.get("topic", "default"), peer_ids[node_idx], log["from"])
+                remove_connection(log.get("topic", "default"), node_idx, peer_ids[log["from"]])
+                register_received_bytes(node_idx, log["size"], False)
             case "Sent Message":
-                register_message_send(log["id"], peer_ids[node_idx], get_time(log))
-                register_sent_bytes(peer_ids[node_idx], log["size"], True)
+                register_message_send(log["id"], node_idx, get_time(log))
+                register_sent_bytes(node_idx, log["size"], True)
             case "Received Message":
-                register_message_delivery(log["id"], peer_ids[node_idx], get_time(log))
+                register_message_delivery(log["id"], node_idx, get_time(log))
+                register_received_bytes(node_idx, log["size"], True)
             case msg if msg.startswith("Sent"):
-                register_sent_bytes(peer_ids[node_idx], log["size"], False)
+                register_sent_bytes(node_idx, log["size"], False)
+            case msg if msg.startswith("Received"):
+                register_received_bytes(node_idx, log["size"], False)
                 
         if (elapsed_time >= next_snapshot):
             save_snapshot(snapshot_dir, elapsed_time)
@@ -300,54 +294,76 @@ def get_message_source_locations(test_dir: str) -> dict[int, str]:
     return source_locations
 
 
-def plot_total_network_traffic(plots_dir: str, json_data: list[tuple[int, dict]]) -> None:
+def plot_total_network_traffic(plots_dir: str, snapshot_data: list[tuple[int, dict]]) -> None:
     elapsed_micros = [0]
-    total_bandwidth = [0]
-
-    for i, (total_microseconds, data) in enumerate(json_data):
+    total_bandwidth_up = [0]
+    total_bandwidth_down = [0]
+    
+    for i, (total_microseconds, data) in enumerate(snapshot_data):
+        snapshot_bandwidth_up = sum([node_data["bytes_up"]["payload"] for node_data in data["nodes"].values()])
+        snapshot_bandwidth_down = sum([node_data["bytes_down"]["payload"] for node_data in data["nodes"].values()])
         elapsed_micros.append(total_microseconds)
-        total_bandwidth.append(sum(data["bytes_payload"].values()))
+        total_bandwidth_up.append(snapshot_bandwidth_up)
+        total_bandwidth_down.append(snapshot_bandwidth_down)
       
-    x, y = [], []
+    x, y_up, y_down = [], [], []
         
     i = 1
-    for j in range(i+1, len(total_bandwidth)):
+    for j in range(i+1, len(total_bandwidth_up)):
         delta_micros = elapsed_micros[j] - elapsed_micros[i]
-        delta_bytes = total_bandwidth[j] - total_bandwidth[i]
-        if (delta_micros >= 30_000_000):
+        delta_bytes_up = total_bandwidth_up[j] - total_bandwidth_up[i]
+        delta_bytes_down = total_bandwidth_down[j] - total_bandwidth_down[i]
+        if (delta_micros >= 1_000_000):
             x.append(elapsed_micros[j] / 60_000_000) # minutes
-            y.append(8 * delta_bytes / delta_micros) # Mbps
+            y_up.append(8 * delta_bytes_up / delta_micros) # Mbps
+            y_down.append(8 * delta_bytes_down / delta_micros) # Mbps
             i = j
 
     plt.xlabel("Time (minutes)")
     plt.ylabel("Traffic (Mbps)")
     plt.title("Network Traffic")
+
+    plt.plot(x, y_up, label="Upload")
+    plt.plot(x, y_down, label="Download")
     
-    plt.plot(x, y)
+    plt.legend()
+    plt.xlim((x[0], x[-1]))
+    plt.ylim(bottom=0)
 
     plt.savefig(os.path.join(plots_dir, "network_traffic.png"))
     plt.clf()
 
 
-def plot_payload_traffic_by_node(plots_dir: str, json_data: list[tuple[int, dict]]) -> None:
-    node_ids = set(json_data[-1][1]["bytes_payload"].keys())
-
-    x = []
-    y = []
-
-    for total_microseconds, data in json_data:
+def plot_payload_traffic_by_node(plots_dir: str, snapshot_data: list[tuple[int, dict]]) -> None:
+    x, y_up, y_down = [], {}, {}
+    for i, (total_microseconds, data) in enumerate(snapshot_data):
         x.append(total_microseconds / 60_000_000)
-        y.append({node_id: data["bytes_payload"].get(node_id, 0) for node_id in node_ids})
-
+        for node_id, node_data in data["nodes"].items():
+            if node_id not in y_up:
+                y_up[node_id] = [0] * i
+                y_down[node_id] = [0] * i
+                
+            y_up[node_id].append(node_data["bytes_up"]["payload"]) 
+            y_down[node_id].append(node_data["bytes_down"]["payload"])  
+            
     plt.xlabel("Time (minutes)")
     plt.ylabel("Traffic (MB)")
-    plt.title("Cumulative Payload Traffic by Node")
 
-    for node_id in node_ids:
-        plt.plot(x, [e[node_id] // 1_000_000 for e in y], label=node_id)
+    plt.title("Cumulative Upload Traffic by Node")
+    for node_id, y in y_up.items():
+        plt.plot(x, y, label=node_id)
 
-    # plt.legend()
-    plt.savefig(os.path.join(plots_dir, "payload_traffic_by_node.png"))
+    plt.savefig(os.path.join(plots_dir, "traffic_by_node_up.png"))
+    plt.clf()
+    
+    plt.xlabel("Time (minutes)")
+    plt.ylabel("Traffic (MB)")
+
+    plt.title("Cumulative Download Traffic by Node")
+    for node_id, y in y_down.items():
+        plt.plot(x, y, label=node_id)
+
+    plt.savefig(os.path.join(plots_dir, "traffic_by_node_down.png"))
     plt.clf()
 
 
@@ -441,12 +457,8 @@ def plot_median_delivery_histogram(plots_dir: str, delivery_latencies_ms: list[t
     plt.clf()
 
 
-def generate_plots(test_dir: str, data_dir: str, warmup_time: timedelta) -> str:
-    plots_dir = os.path.join(test_dir, "plots")
-    os.makedirs(plots_dir, exist_ok=True)
-
+def get_snapshot_data(data_dir: str, warmup_time: timedelta) -> list[tuple[int, dict]]:
     snapshot_data = {}
-    
     snapshot_files = glob.glob(os.path.join(data_dir, "snapshots", "*.json"))
     for file_path in tqdm(snapshot_files, "Parsing data snapshots"):
         file_name = os.path.basename(file_path)
@@ -466,15 +478,22 @@ def generate_plots(test_dir: str, data_dir: str, warmup_time: timedelta) -> str:
         with open(file_path, 'r') as f:
             snapshot_data[total_microseconds] = json.load(f)
     
+    return sorted(snapshot_data.items())
+
+
+def generate_plots(test_dir: str, data_dir: str, warmup_time: timedelta) -> str:
+    plots_dir = os.path.join(test_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+
     source_locations = get_message_source_locations(test_dir)
-    snapshot_data = sorted(snapshot_data.items())
+    snapshot_data = get_snapshot_data(data_dir, warmup_time)
     
     with open(os.path.join(data_dir, "messages.json"), 'r') as f:
-        messages_data = json.load(f)
+        message_data = json.load(f)
     
     msg_delivery_latencies: list[tuple[int, list[float]]] = []
 
-    for msg_id, msg_data in tqdm(messages_data.items(), desc="Calculating message delivery times"):        
+    for msg_id, msg_data in tqdm(message_data.items(), desc="Calculating message delivery times"):        
         send_ts = parser.isoparse(msg_data["sent"])
         delivery_times = [parser.isoparse(ts) for ts in msg_data["received"].values()]
         delivery_times.sort()
@@ -483,7 +502,7 @@ def generate_plots(test_dir: str, data_dir: str, warmup_time: timedelta) -> str:
         
         if len(delivery_latencies_ms) > 1:
             msg_delivery_latencies.append((int(msg_id), delivery_latencies_ms))
-
+    
     plot_total_network_traffic(plots_dir, snapshot_data)
     plot_payload_traffic_by_node(plots_dir, snapshot_data)
     

@@ -378,19 +378,24 @@ def random_publish_malicious_new_connections(
     instructions = {node_id: [] for node_id in range(node_count)}
 
     interval_ms = 100
-    message_size = 4200
-    active_set_size = 50
+    message_size = 4300
+    honest_set_size = 50
     messages_per_phase = 250
-
+    
+    honest_nodes = list(range(0, honest_set_size))
+    malicious_nodes = list(range(honest_set_size, node_count))[::-1]
+    
     experiment_state = ExperimentState(
-        active_set = list(range(0, active_set_size)),
-        ready_set = list(range(active_set_size, node_count))[::-1]
+        active_set = honest_nodes.copy(),
+        ready_set = malicious_nodes.copy()
     )
     
-    def node_setup(_node_id: int, _num_connections: int) -> list[ScriptInstruction]:
-        setup_instructions = []
+    def random_peers(_node_id: int, _num_peers: int) -> list[int]:
         candidates = [n for n in experiment_state.active_set if n != _node_id]
-        connections = random.sample(candidates, k=min(_num_connections, len(candidates)))
+        return random.sample(candidates, k=min(_num_peers, len(candidates)))
+    
+    def node_setup(_peers: list[int]) -> list[ScriptInstruction]:
+        setup_instructions = []
         if experiment_state.elapsed_time_ms > 0:
             setup_instructions.append(
                 script_instruction.WaitUntil(
@@ -398,7 +403,7 @@ def random_publish_malicious_new_connections(
                 )
             )
         setup_instructions.append(
-            script_instruction.Connect(connectTo=connections)
+            script_instruction.Connect(connectTo=_peers.copy())
         )
         for topic in topic_strs:  
             setup_instructions.append(
@@ -408,7 +413,7 @@ def random_publish_malicious_new_connections(
         return setup_instructions
     
     for node_id in experiment_state.active_set:
-        instructions[node_id].extend(node_setup(node_id, 8))        
+        instructions[node_id].extend(node_setup(random_peers(node_id, 8)))        
 
     startup_phase = ExperimentPhase(
         state=experiment_state,
@@ -417,13 +422,11 @@ def random_publish_malicious_new_connections(
     )
     startup_phase.apply(experiment_state, instructions)    
         
-    num_initial_phases = 15
-    num_end_phases = 30
+    num_initial_phases = 20
+    num_end_phases = 40
     
     warmup_time_ms = 60_000
-    
-    phase_info = []
-    
+        
     for _ in range(num_initial_phases):
         phase = ExperimentPhase(
             state=experiment_state,
@@ -433,7 +436,7 @@ def random_publish_malicious_new_connections(
         
         message_ids = []
         for _ in range(messages_per_phase):
-            node_id = random.choice(experiment_state.active_set)
+            node_id = random.choice(honest_nodes)
             topic = topic_strs[0]
             message_id = phase.add_message(
                 delay_ms=interval_ms,
@@ -442,54 +445,16 @@ def random_publish_malicious_new_connections(
                 size_bytes=message_size
             )
             message_ids.append(message_id)
-            
-        phase_info.append({
-            "active_nodes": experiment_state.active_set.copy(),
-            "message_ids": message_ids
-        })
         phase.apply(experiment_state, instructions)
-                     
+                             
     # add malicious nodes
-    malicious_nodes = experiment_state.ready_set[:8]
-    experiment_state.ready_set = experiment_state.ready_set[8:]
-    experiment_state.active_set.extend(malicious_nodes)
+    new_nodes = experiment_state.ready_set.copy()
+    experiment_state.active_set.extend(new_nodes)
+    experiment_state.ready_set.clear()
     
     # as many connections as possible
-    num_connections = len(experiment_state.active_set)
-    for new_node in malicious_nodes:
-        instructions[new_node].extend(node_setup(new_node, num_connections))
-        
-    # try replacing nodes to sustain the higher bandwidth 
-    for _ in range(len(experiment_state.ready_set)):
-        phase = ExperimentPhase(
-            state=experiment_state,
-            warmup_time_ms=warmup_time_ms,
-            cooldown_time_ms=60_000
-        )
-        
-        message_ids = []
-        for _ in range(messages_per_phase):
-            node_id = random.choice(experiment_state.active_set)
-            topic = topic_strs[0]
-            message_id = phase.add_message(
-                delay_ms=interval_ms,
-                topic=topic,
-                node_id=node_id,
-                size_bytes=message_size
-            )
-            message_ids.append(message_id)
-            
-        phase_info.append({
-            "active_nodes": experiment_state.active_set.copy(),
-            "message_ids": message_ids
-        })
-        phase.apply(experiment_state, instructions)
-        
-        # cycle node after phase
-        new_node = experiment_state.ready_set.pop()
-        experiment_state.active_set.pop(-8)
-        experiment_state.active_set.append(new_node)
-        instructions[new_node].extend(node_setup(new_node, len(experiment_state.active_set)))
+    for new_node in new_nodes:
+        instructions[new_node].extend(node_setup(honest_nodes))
         
     for _ in range(num_end_phases):
         phase = ExperimentPhase(
@@ -500,7 +465,7 @@ def random_publish_malicious_new_connections(
         
         message_ids = []
         for _ in range(messages_per_phase):
-            node_id = random.choice(experiment_state.active_set)
+            node_id = random.choice(honest_nodes)
             topic = topic_strs[0]
             message_id = phase.add_message(
                 delay_ms=interval_ms,
@@ -509,15 +474,7 @@ def random_publish_malicious_new_connections(
                 size_bytes=message_size
             )
             message_ids.append(message_id)
-            
-        phase_info.append({
-            "active_nodes": experiment_state.active_set.copy(),
-            "message_ids": message_ids
-        })
         phase.apply(experiment_state, instructions)
-     
-    with open("phase_info.json", "w") as f:
-        json.dump(phase_info, f, indent=2)
             
     return instructions
 
