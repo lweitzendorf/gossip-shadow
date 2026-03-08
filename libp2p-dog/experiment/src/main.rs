@@ -4,7 +4,6 @@ use std::time::Instant;
 
 mod behaviour;
 mod handler;
-mod state;
 mod swarm;
 
 mod connector;
@@ -41,7 +40,7 @@ fn create_logger() -> (Logger, Logger) {
         .build()
         .fuse();
     let stderr_drain = slog_async::Async::new(stderr_drain).build().fuse();
-    let stderr_logger = slog::Logger::root(stderr_drain, o!());
+    let stderr_logger = Logger::root(stderr_drain, o!());
 
     // Create stdout logger for special messages
     let stdout_drain = slog_json::Json::new(std::io::stdout())

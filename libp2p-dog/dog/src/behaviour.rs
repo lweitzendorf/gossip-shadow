@@ -64,6 +64,20 @@ pub enum Event {
         /// The transaction itself.
         transaction: Transaction,
     },
+    HaveTxReceived {
+        propagation_source: PeerId,
+        transaction_id: TransactionId
+    },
+    HaveTxSent {
+        propagation_target: PeerId,
+        transaction_id: TransactionId
+    },
+    ResetRouteReceived {
+        propagation_source: PeerId,
+    },
+    ResetRouteSent {
+        propagation_target: PeerId,
+    },
     /// The router's routes have been updated.
     RoutingUpdated {
         /// The current disabled routes.
@@ -492,7 +506,12 @@ where
 
         let tx_id = self.config.transaction_id(&transaction);
 
-        // TODO: validate transaction if needed
+        self.events
+            .push_back(ToSwarm::GenerateEvent(Event::TransactionReceived {
+                propagation_source: *propagation_source,
+                transaction_id: tx_id.clone(),
+                transaction,
+            }));
 
         if !self.cache.insert(tx_id.clone(), *propagation_source) {
             tracing::debug!(transaction=%tx_id, "Transaction already received, ignoring");
@@ -509,13 +528,19 @@ where
 
             tracing::debug!(peer=%propagation_source, "Sending HaveTx to peer");
 
-            if self.send_transaction(*propagation_source, RpcOut::HaveTx(HaveTx { tx_id })) {
+            if self.send_transaction(*propagation_source, RpcOut::HaveTx(HaveTx { tx_id: tx_id.clone() })) {
                 self.router.register_have_tx_sent(*propagation_source);
                 self.redundancy_controller.block_have_tx();
 
                 if let Some(m) = self.metrics.as_mut() {
                     m.register_have_tx_sent();
                 }
+
+                self.events
+                    .push_back(ToSwarm::GenerateEvent(Event::HaveTxSent {
+                        propagation_target: propagation_source.clone(),
+                        transaction_id: tx_id,
+                    }));
             }
 
             return;
@@ -528,13 +553,6 @@ where
         }
 
         tracing::debug!("Deliver received transaction to user");
-
-        self.events
-            .push_back(ToSwarm::GenerateEvent(Event::TransactionReceived {
-                propagation_source: *propagation_source,
-                transaction_id: tx_id.clone(),
-                transaction,
-            }));
 
         if self.config.forward_transactions() {
             self.forward_transaction(&tx_id, raw_transaction, propagation_source);
@@ -556,6 +574,11 @@ where
         tracing::debug!(peer=%propagation_source, "Received HaveTx from peer with {} transaction ids", tx_ids.len());
 
         for tx_id in tx_ids {
+            self.events.push_back(ToSwarm::GenerateEvent(Event::HaveTxReceived {
+                propagation_source: propagation_source.clone(),
+                transaction_id: tx_id.clone(),
+            }));
+
             if let Some(source) = self.cache.get(&tx_id) {
                 if *source == *propagation_source {
                     continue;
@@ -577,6 +600,11 @@ where
 
     fn handle_reset_route(&mut self, propagation_source: &PeerId) {
         tracing::debug!(peer=%propagation_source, "Re-enabling a random route to peer");
+
+        self.events
+            .push_back(ToSwarm::GenerateEvent(Event::ResetRouteReceived {
+                propagation_source: propagation_source.clone(),
+            }));
 
         match self.router.enable_random_route_to_peer(*propagation_source) {
             Some(route) => {
@@ -613,6 +641,11 @@ where
                         if let Some(m) = self.metrics.as_mut() {
                             m.register_reset_route_sent();
                         }
+
+                        self.events
+                            .push_back(ToSwarm::GenerateEvent(Event::ResetRouteSent {
+                                propagation_target: peer_id,
+                            }));
                     }
                 }
                 None => {

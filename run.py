@@ -24,11 +24,9 @@ def send_discord_alert(message: str) -> None:
         "content": message
     })
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Generate files but not run Shadow")
-    parser.add_argument("--node-count", type=int, required=True)
     parser.add_argument("--seed", type=int, required=False, default=1)
     parser.add_argument("--network", type=str, required=False)
     parser.add_argument("--scenario", type=str, required=True)
@@ -45,7 +43,7 @@ def main():
         git_describe = "unknown"
     
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-    experiment_name = f"{args.node_count}-{args.network}-{args.scenario}-{args.protocol}---{args.seed}-{timestamp}-{git_describe}"
+    experiment_name = f"{args.scenario}-{args.network}-{args.protocol}---{args.seed}-{timestamp}-{git_describe}"
 
     if args.output_dir is None:
         args.output_dir = f"{experiment_name}.data"
@@ -53,8 +51,9 @@ def main():
     random.seed(args.seed)
 
     print("Generating experiment params...")
-    binaries = experiment.composition(args.protocol)
-    experiment_params, time_sec = experiment.scenario(args.protocol, args.scenario, args.node_count)
+    exp = experiment.scenario(args.protocol, args.scenario)
+    experiment_params, time_sec = exp.finalize()
+    binary_paths = [node.binary for node in exp.nodes]
 
     params_file_location = os.path.join(os.getcwd(), args.output_dir, "params")
     os.makedirs(params_file_location, exist_ok=True)
@@ -62,20 +61,13 @@ def main():
     print("Writing experiment params...")
     for node_id, node_params in tqdm(experiment_params.items()):
         with open(os.path.join(params_file_location, f"node{node_id}.json"), "w") as f:
-            d = asdict(node_params)            
+            d = asdict(node_params)
             d["script"] = [
                 instruction.model_dump(exclude_none=True)
                 for instruction in node_params.script
             ]
-            json.dump(d, f)
+            json.dump(d, f, indent=2)
 
-    # Define the binaries we are running
-    binary_paths = random.choices(
-        [b.path for b in binaries],
-        weights=[b.percent_of_nodes for b in binaries],
-        k=args.node_count,
-    )
-    
     graph_file_path = os.path.join(args.output_dir, "graph.gml")
     shadow_yaml_file_path = os.path.join(args.output_dir, "shadow.yaml")
 

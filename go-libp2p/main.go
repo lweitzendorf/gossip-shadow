@@ -60,7 +60,7 @@ func nodePrivKey(id int) crypto.PrivKey {
 }
 
 type ExperimentParams struct {
-	Script ScriptInstructions `json:"script"`
+	Script []ScriptInstruction `json:"script"`
 }
 
 func readParams(path string) (ExperimentParams, error) {

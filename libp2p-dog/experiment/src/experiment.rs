@@ -6,14 +6,12 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use crate::behaviour::MyBehaviour;
 use crate::connector;
-use crate::script_instruction::{ExperimentParams, NodeID, ScriptInstruction};
+use crate::script_instruction::{ExperimentParams, Instruction, NodeID, ScriptInstruction};
 use crate::handler;
-use crate::state::State;
 
 pub struct ScriptedNode {
     node_id: NodeID,
     swarm: Swarm<MyBehaviour>,
-    state: State,
     stderr_logger: Logger,
     stdout_logger: Logger,
     start_time: Instant,
@@ -28,23 +26,64 @@ impl ScriptedNode {
         start_time: Instant,
     ) -> Self {
         info!(stdout_logger, "PeerID"; "id" => %swarm.local_peer_id(), "node_id" => %node_id);
-        let state = State::new();
         Self {
             node_id,
             swarm,
-            state,
             stderr_logger,
             stdout_logger,
             start_time,
         }
     }
 
-    pub async fn run_instruction(
+    pub async fn run_script_instruction(
         &mut self,
-        instruction: ScriptInstruction,
+        script_instruction: ScriptInstruction
+    ) -> Result<(), Box<dyn std::error::Error>>  {
+
+        let elapsed_millis = script_instruction.elapsed_millis;
+
+        let target_time = self.start_time + Duration::from_millis(elapsed_millis);
+        let now = Instant::now();
+
+        if now < target_time {
+            let wait_time = target_time.duration_since(now);
+            info!(
+                self.stderr_logger,
+                "Waiting {:?} (until elapsed: {}ms)", wait_time, elapsed_millis
+            );
+            // Create a timeout future
+            let mut timeout = Box::pin(sleep(wait_time));
+            // Process events while waiting for the timeout
+            loop {
+                tokio::select! {
+                    _ = &mut timeout => {
+                        // Timeout complete, we can continue
+                        break;
+                    }
+                    event = self.swarm.select_next_some() => {
+                        // Process any messages that arrive during sleep
+                        handler::handle_swarm_event(
+                            event, self.stderr_logger.clone(), self.stdout_logger.clone(),
+                            &mut self.swarm
+                        ).await;
+                    }
+                }
+            }
+        }
+
+        for instruction in script_instruction.instructions {
+            self.run_instruction(instruction).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn run_instruction(
+        &mut self,
+        instruction: Instruction,
     ) -> Result<(), Box<dyn std::error::Error>> {
         match instruction {
-            ScriptInstruction::Connect { connect_to } => {
+            Instruction::Connect { connect_to } => {
                 for target_node_id in connect_to {
                     match connector::connect_to(&mut self.swarm, target_node_id).await {
                         Ok(_) => {
@@ -64,39 +103,7 @@ impl ScriptedNode {
                     "Node {} connected to peers", self.node_id
                 );
             }
-            ScriptInstruction::WaitUntil { elapsed_millis } => {
-                let target_time = self.start_time + Duration::from_millis(elapsed_millis);
-                let now = Instant::now();
-
-                if now < target_time {
-                    let wait_time = target_time.duration_since(now);
-                    info!(
-                        self.stderr_logger,
-                        "Waiting {:?} (until elapsed: {}ms)", wait_time, elapsed_millis
-                    );
-
-                    // Create a timeout future
-                    let mut timeout = Box::pin(sleep(wait_time));
-
-                    // Process events while waiting for the timeout
-                    loop {
-                        tokio::select! {
-                            _ = &mut timeout => {
-                                // Timeout complete, we can continue
-                                break;
-                            }
-                            event = self.swarm.select_next_some() => {
-                                // Process any messages that arrive during sleep
-                                handler::handle_swarm_event(
-                                    event, self.stderr_logger.clone(), self.stdout_logger.clone(),
-                                    &mut self.swarm, &mut self.state
-                                ).await;
-                            }
-                        }
-                    }
-                }
-            }
-            ScriptInstruction::Publish {
+            Instruction::Publish {
                 message_id,
                 message_size_bytes,
                 topic_id: _,
@@ -122,7 +129,7 @@ impl ScriptedNode {
                     }
                 }
             }
-            ScriptInstruction::SubscribeToTopic { topic_id: _, } => {}
+            Instruction::SubscribeToTopic { topic_id: _, } => {}
         }
 
         Ok(())
@@ -145,11 +152,7 @@ pub async fn run_experiment(
         start_time,
     );
     for instruction in params.script {
-        node.run_instruction(instruction).await?;
-        if node.state.should_shutdown {
-            break
-        }
+        node.run_script_instruction(instruction).await?;
     }
     Ok(())
 }
-

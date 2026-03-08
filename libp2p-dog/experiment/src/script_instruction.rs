@@ -46,15 +46,12 @@ impl From<NodeID> for Keypair {
         Keypair::ed25519_from_bytes(seed).expect("Failed to create keypair")
     }
 }
-/// ScriptInstruction represents an instruction that can be executed in a script.
+/// Instruction represents an instruction that can be executed in a script.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum ScriptInstruction {
+pub enum Instruction {
     #[serde(rename = "connect", rename_all = "camelCase")]
     Connect { connect_to: Vec<NodeID> },
-
-    #[serde(rename = "waitUntil", rename_all = "camelCase")]
-    WaitUntil { elapsed_millis: u64 },
 
     #[serde(rename = "subscribeToTopic", rename_all = "camelCase")]
     SubscribeToTopic {
@@ -70,6 +67,13 @@ pub enum ScriptInstruction {
         #[serde(rename = "topicID")]
         topic_id: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptInstruction {
+    #[serde(rename = "elapsedMillis")]
+    pub elapsed_millis: u64,
+    pub instructions: Vec<Instruction>
 }
 
 /// ExperimentParams contains all parameters for an experiment.

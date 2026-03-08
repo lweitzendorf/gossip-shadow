@@ -1,31 +1,56 @@
+import json
+import random
 from collections import defaultdict
 from dataclasses import dataclass, field
-import random
-import json
-from typing import List, Dict, Set, Optional
+from abc import ABC
+from typing import List, Dict, Set, Sequence, TypeAlias
 
 import networkx as nx
 
-from script_instruction import GossipSubParams, ScriptInstruction, NodeID
 import script_instruction
+from script_instruction import ScriptInstruction, GossipSubParams, DOGParams
 
 
-@dataclass
-class Binary:
-    path: str
-    percent_of_nodes: int
-
+NodeID: TypeAlias = int
 
 @dataclass
 class ExperimentParams:
     script: List[ScriptInstruction] = field(default_factory=list)
     
+class Node(ABC):
+    def __init__(self, idx: NodeID, binary: str) -> None:
+        super().__init__()
+        self.idx = idx
+        self.binary = binary
+
+    def init_instructions(self) -> list:
+        return []
+
+class GossipSubNode(Node):
+    def __init__(self, idx: int, params: GossipSubParams) -> None:
+        super().__init__(idx, "go-libp2p/gossipsub-bin")
+        self.params = params
+
+    def init_instructions(self) -> list:
+        return [script_instruction.InitGossipSub(params=self.params)]
+
+class DOGNode(Node):
+    def __init__(self, idx: int, params: DOGParams) -> None:
+        super().__init__(idx, "libp2p-dog/target/debug/experiment")
+        self.params = params
+
+class MaliciousDOGNode(Node):
+    def __init__(self, idx: int, params: DOGParams) -> None:
+        super().__init__(idx, "libp2p-dog-modified/target/debug/experiment")
+        self.params = params
+
+    
 @dataclass
 class ExperimentState:
     elapsed_time_ms: int = 0
     next_message_id: int = 0
-    active_set: list[int] = field(default_factory=list)
-    ready_set: list[int] = field(default_factory=list)
+    active_set: list[Node] = field(default_factory=list)
+    ready_set: list[Node] = field(default_factory=list)
     
 class ExperimentPhase:
     def __init__(
@@ -46,582 +71,321 @@ class ExperimentPhase:
     def _get_end_time_ms(self) -> int:
         return self._get_main_phase_end_time_ms() + self.cooldown_time_ms
     
-    def add_message(self, delay_ms: int, topic: str, node_id: int, size_bytes: int) -> int:
-        if delay_ms >= 0:
-            self._main_phase_duration_ms += delay_ms
-            wait_instruction = script_instruction.WaitUntil(
-                elapsedMillis=self._get_main_phase_end_time_ms()
-            )
-            for _node_id in self.state.active_set:
-                self._main_phase[_node_id].append(wait_instruction)
-                
+    def add_message(self, delay_ms: int, node_id: int, size_bytes: int, topic: str = "default") -> int:
+        active_ids = {n.idx for n in self.state.active_set}
+        assert node_id in active_ids, f"node {node_id} is not in the active set"
+        
+        self._main_phase_duration_ms += delay_ms
         message_id = self.state.next_message_id
         self.state.next_message_id += 1
+
         publish_instruction = script_instruction.Publish(
-            messageID=self.state.next_message_id,
+            messageID=message_id,
             topicID=topic,
             messageSizeBytes=size_bytes,
         )
-        self._main_phase[node_id].append(publish_instruction)
+        self._main_phase[node_id].append(ScriptInstruction(
+            elapsedMillis=self._get_main_phase_end_time_ms(),
+            instructions=[publish_instruction]
+        ))
         return message_id
             
-    def apply(self, state: ExperimentState, instructions: dict[int, list[ScriptInstruction]]) -> None:                
-        for node_id in self.state.active_set:
-            if node_id not in instructions:
-                instructions[node_id] = []
-            
-            if self.warmup_time_ms > 0:
-                instructions[node_id].append(
-                    script_instruction.WaitUntil(
-                        elapsedMillis=self.state.elapsed_time_ms + self.warmup_time_ms
+    def _apply(self, instructions: dict[int, list[ScriptInstruction]]) -> None:
+        for node in self.state.active_set:
+            instructions[node.idx].extend(self._main_phase[node.idx])
+            if (self.cooldown_time_ms > 0) or (not self._main_phase[node.idx]):
+                instructions[node.idx].append(
+                    ScriptInstruction(
+                        elapsedMillis=self._get_end_time_ms(),
+                        instructions=[]
                     )
                 )
-            instructions[node_id].extend(self._main_phase[node_id])
-            if self.cooldown_time_ms > 0:
-                instructions[node_id].append(
-                    script_instruction.WaitUntil(
-                        elapsedMillis=self._get_end_time_ms()
-                    )
-                )
+        self.state.elapsed_time_ms = self._get_end_time_ms()
         
-        state.elapsed_time_ms = self._get_end_time_ms()
-        state.next_message_id = self.state.next_message_id        
-        
+class Experiment:
+    def __init__(self, nodes: Sequence[Node]) -> None:
+        self.nodes = sorted(nodes, key=lambda n: n.idx)
+        self.state = ExperimentState(ready_set=list(nodes))
+        self._instructions: dict[int, list[ScriptInstruction]] = defaultdict(list)
 
-def scenario(protocol: str, scenario_name: str, node_count: int) -> tuple[dict[int, ExperimentParams], int]:
-    instructions = {node_id: [] for node_id in range(node_count)}
-    
-    def add_instructions(_instructions: list[ScriptInstruction], _node_id: Optional[int] = None):
-        if _node_id is None:
-            for _node_id in range(node_count):
-                instructions[_node_id].extend(_instructions)
-        else:
-            instructions[_node_id].extend(_instructions)
+    def activate_nodes(self, nodes: Sequence[Node]) -> None:
+        for node in nodes:
+            self.state.ready_set.remove(node)
+            self.state.active_set.append(node)
 
-    def add_mapped_instructions(_instruction_map: dict[int, list[ScriptInstruction]]):
-        for _node_id, _node_instructions in _instruction_map.items():
-            instructions[_node_id].extend(_node_instructions)
+    def activate_all(self) -> None:
+        self.activate_nodes(self.state.ready_set.copy())
 
-    num_messages = 1200
-    message_size = 1024
-    topics = ["topic-a"]
-        
-    match protocol:
-        case "gossipsub":
-            gs_params = GossipSubParams()
-            init_instruction = script_instruction.InitGossipSub(gossipSubParams=gs_params)
-            add_instructions([init_instruction])
-        case _:
-            pass
-    
-    def subscribe_to_topics() -> list[ScriptInstruction]:
-        return [script_instruction.SubscribeToTopic(topicID=topic) for topic in topics]
-    
-    match scenario_name:
-        case "random":
-            number_of_conns_per_node = min(8, node_count - 1)
-            add_mapped_instructions(random_network_mesh(node_count, number_of_conns_per_node))
-            add_instructions(subscribe_to_topics())
-            add_mapped_instructions(
-                random_publish(
-                    node_count=node_count,
-                    num_messages=num_messages,
-                    message_size=message_size,
-                    topic_strs=topics,
-                    interval_ms=12_000
-                )
-            )
-        case "line-feed-in":
-            add_mapped_instructions(line_mesh(node_count))
-            add_instructions(subscribe_to_topics())
-            add_mapped_instructions(
-                random_publish(
-                    node_count=node_count,
-                    num_messages=round(num_messages * 0.2),
-                    message_size=message_size,
-                    topic_strs=topics,
-                    interval_ms=12_000
-                )
-            )
-            add_mapped_instructions(random_network_mesh(node_count, node_count // 2))
-            add_mapped_instructions(
-                random_publish(
-                    node_count=node_count,
-                    num_messages=round(num_messages * 0.8),
-                    message_size=message_size,
-                    topic_strs=topics,
-                    interval_ms=12_000
-                )
-            )
-        case "two-cliques":
-            degree = 6
-            z = [degree for _ in range(node_count)]
-            G = nx.expected_degree_graph(z)
+    def deactivate_nodes(self, nodes: Sequence[Node]) -> None:
+        for node in nodes:
+            self.state.active_set.remove(node)
 
-            # clique A
-            for i in range(node_count // 2):
-                for j in range(node_count // 2):
-                    if i != j:
-                        G.add_edge(i, j)
+    def add_instruction(self, node_idx: int, instruction: ScriptInstruction) -> None:
+        self._instructions[node_idx].append(instruction)
 
-            # clique B
-            for i in range(node_count // 2, node_count):
-                for j in range(node_count // 2, node_count):
-                    if i != j:
-                        G.add_edge(i, j)
+    def setup_node(self, node: Node, peers: list[int], topics: list[str]) -> None:
+        self.add_instruction(node.idx, ScriptInstruction(
+            elapsedMillis=self.state.elapsed_time_ms,
+            instructions=[
+                *node.init_instructions(),
+                script_instruction.Connect(connectTo=peers),
+                *[script_instruction.SubscribeToTopic(topicID=t) for t in topics]
+            ]
+        ))
 
-            for node_id, nbrdict in G.adjacency():
-                neighbors = list(nbrdict.keys())
-                random.shuffle(neighbors)
-                add_instructions(
-                    [script_instruction.Connect(connectTo=neighbors)],
-                    _node_id=node_id
-                )
+    def new_phase(self, warmup_ms: int = 0, cooldown_ms: int = 0) -> ExperimentPhase:
+        return ExperimentPhase(self.state, warmup_ms, cooldown_ms)
 
-            add_instructions(subscribe_to_topics())
-            add_mapped_instructions(
-                random_publish(
-                    node_count=node_count,
-                    num_messages=num_messages,
-                    message_size=message_size,
-                    topic_strs=topics,
-                    interval_ms=12_000
-                )
-            )
-        case "all-to-all":            
-            for node_id in range(node_count):
-                connections = list(range(node_id)) + list(range(node_id+1, node_count))
-                random.shuffle(connections)
-                add_instructions(
-                    [script_instruction.Connect(connectTo=connections)], 
-                    _node_id=node_id
-                )
+    def apply_phase(self, phase: ExperimentPhase) -> None:
+        phase._apply(self._instructions)
 
-            add_instructions(subscribe_to_topics())
-            add_mapped_instructions(
-                random_publish(
-                    node_count=node_count,
-                    num_messages=num_messages,
-                    message_size=message_size,
-                    topic_strs=topics,
-                    interval_ms=12_000
-                )
-            )
-        case "faivre-30-tps":
-            num_minutes = 5
-            interval_ms = 33
-            num_messages = num_minutes * 60 * round(1000 / interval_ms)
-            add_mapped_instructions(random_network_mesh(node_count, 10))
-            add_instructions(subscribe_to_topics())
-            add_mapped_instructions(
-                all_publish(
-                    node_count=node_count,
-                    num_messages=num_messages,
-                    message_size=message_size,
-                    topic_strs=topics,
-                    interval_ms=interval_ms
-                )
-            )
-        case "malicious-new-connections":
-            add_mapped_instructions(
-                random_publish_malicious_new_connections(
-                    node_count=node_count,
-                    topic_strs=topics
-                )
-            )
-        case "rolling-churn":
-            add_mapped_instructions(
-                random_publish_node_churn(
-                    node_count=node_count,
-                    topic_strs=topics
-                )
-            )
-        case _:
-            raise ValueError(f"Unknown scenario name: {scenario_name}")
-        
-    time_ms = 0
-    for node_id, node_instructions in instructions.items():
-        for instruction in reversed(node_instructions):
-            if isinstance(instruction, script_instruction.WaitUntil):
-                time_ms = max(time_ms, instruction.elapsedMillis)
-                break
-            
-    time_sec = (time_ms + 999) // 1000
-                
-    return {_node_id: ExperimentParams(script=_instructions) for _node_id, _instructions in instructions.items()}, time_sec
-
-
-def composition(protocol: str) -> List[Binary]:
-    match protocol:
-        case "gossipsub":
-            return [Binary("go-libp2p/gossipsub-bin", percent_of_nodes=100)]
-        case "dog":
-            return [Binary("libp2p-dog/target/debug/experiment", percent_of_nodes=100)]
-    raise ValueError(f"Unknown protocol name: {protocol}")
-
-
-def line_mesh(num_nodes: int) -> dict[int, list[ScriptInstruction]]:
-    instructions = defaultdict(list)
-
-    for node_id in range(num_nodes):
-        instructions[node_id].append(
-            script_instruction.Connect(
-                connectTo=[(node_id + 1) % num_nodes],
-            )
+    def finalize(self) -> tuple[dict[int, ExperimentParams], int]:
+        time_ms = max(
+            instrs[-1].elapsedMillis
+            for instrs in self._instructions.values() if instrs
         )
+        time_sec = (time_ms + 999) // 1000
+        return {
+            nid: ExperimentParams(script=instrs)
+            for nid, instrs in self._instructions.items()
+        }, time_sec
+        
+def make_nodes(protocol: str, count: int) -> list[Node]:
+    match protocol:
+        case "dog":
+            return [DOGNode(i, DOGParams()) for i in range(count)]
+        case "gossipsub":
+            return [GossipSubNode(i, GossipSubParams()) for i in range(count)]
+        case _:
+            raise ValueError(f"Unknown protocol: {protocol}")
 
-    return instructions
 
-
-def random_network_mesh(
-    node_count: int, number_of_connections: int
-) -> dict[int, list[ScriptInstruction]]:
+def random_mesh_connections(node_count: int, num_connections: int) -> dict[int, list[int]]:
     connections: Dict[NodeID, Set[NodeID]] = defaultdict(set)
     connect_to: Dict[NodeID, List[NodeID]] = defaultdict(list)
     for node_id in range(node_count):
-        while len(connections[node_id]) < number_of_connections:
+        while len(connections[node_id]) < num_connections:
             target = random.randint(0, node_count - 1)
             if (target == node_id) or (target in connections[node_id]):
                 continue
-
             connections[node_id].add(target)
             connect_to[node_id].append(target)
             connections[target].add(node_id)
+    return dict(connect_to)
 
-    instructions = defaultdict(list)
-    for node_id, node_connections in connect_to.items():
-        instructions[node_id].append(
-            script_instruction.Connect(
-                connectTo=list(node_connections)
+
+def scenario(protocol: str, scenario_name: str) -> Experiment:
+    match scenario_name:
+        case "random":
+            return scenario_random(protocol)
+        case "two-cliques":
+            return scenario_two_cliques(protocol)
+        case "faivre-30-tps":
+            return scenario_faivre_30_tps(protocol)
+        case "malicious-new-connections":
+            return scenario_malicious_new_connections(protocol)
+        case "rolling-churn":
+            return scenario_rolling_churn(protocol)
+        case _:
+            raise ValueError(f"Unknown scenario: {scenario_name}")
+
+
+def scenario_random(protocol: str) -> Experiment:
+    nodes = make_nodes(protocol, 1000)
+    exp = Experiment(nodes)
+    exp.activate_all()
+
+    mesh = random_mesh_connections(len(nodes), 8)
+    for node in exp.state.active_set:
+        exp.setup_node(node, peers=mesh.get(node.idx, []), topics=["default"])
+
+    phase = exp.new_phase(warmup_ms=120_000, cooldown_ms=30_000)
+    for _ in range(1200):
+        node = random.choice(exp.state.active_set)
+        phase.add_message(delay_ms=12_000, node_id=node.idx, size_bytes=1024)
+    exp.apply_phase(phase)
+
+    return exp
+
+
+def scenario_two_cliques(protocol: str) -> Experiment:
+    node_count = 1000
+    nodes = make_nodes(protocol, node_count)
+    exp = Experiment(nodes)
+    exp.activate_all()
+
+    degree = 6
+    z = [degree for _ in range(node_count)]
+    G = nx.expected_degree_graph(z)
+
+    # clique A
+    for i in range(node_count // 2):
+        for j in range(node_count // 2):
+            if i != j:
+                G.add_edge(i, j)
+
+    # clique B
+    for i in range(node_count // 2, node_count):
+        for j in range(node_count // 2, node_count):
+            if i != j:
+                G.add_edge(i, j)
+
+    for node in exp.state.active_set:
+        neighbors = list(G.neighbors(node.idx))
+        random.shuffle(neighbors)
+        exp.setup_node(node, peers=neighbors, topics=["default"])
+
+    phase = exp.new_phase(warmup_ms=120_000, cooldown_ms=30_000)
+    for _ in range(1200):
+        node = random.choice(exp.state.active_set)
+        phase.add_message(delay_ms=12_000, node_id=node.idx, size_bytes=1024)
+    exp.apply_phase(phase)
+
+    return exp
+
+
+def scenario_faivre_30_tps(protocol: str) -> Experiment:
+    node_count = 1000
+    nodes = make_nodes(protocol, node_count)
+    exp = Experiment(nodes)
+    exp.activate_all()
+
+    mesh = random_mesh_connections(node_count, 10)
+    for node in exp.state.active_set:
+        exp.setup_node(node, peers=mesh.get(node.idx, []), topics=["default"])
+
+    num_minutes = 5
+    interval_ms = 33
+    num_rounds = num_minutes * 60 * round(1000 / interval_ms)
+    message_size = 1024
+
+    phase = exp.new_phase(warmup_ms=120_000, cooldown_ms=120_000)
+    for _ in range(num_rounds):
+        for i, node in enumerate(exp.state.active_set):
+            delay = interval_ms if i == 0 else 0
+            phase.add_message(
+                delay_ms=delay, node_id=node.idx, size_bytes=message_size,
             )
-        )
-    return instructions
+    exp.apply_phase(phase)
+
+    return exp
 
 
-def random_publish(
-    node_count: int, num_messages: int, message_size: int, topic_strs: List[str], interval_ms: int
-) -> dict[int, list[ScriptInstruction]]:
-    instructions = {node_id: [] for node_id in range(node_count)}
+def scenario_malicious_new_connections(protocol: str) -> Experiment:
+    honest_set_size = 50
+    malicious_set_size = 20
+    node_count = honest_set_size + malicious_set_size
 
-    # Start at 120 seconds (2 minutes) to allow for setup time
-    elapsed_ms = 120_000
-    for node_id in instructions:
-        instructions[node_id].append(
-            script_instruction.WaitUntil(elapsedMillis=elapsed_ms)
-        )
+    honest_nodes = [DOGNode(i, DOGParams()) for i in range(honest_set_size)]
+    malicious_nodes = [MaliciousDOGNode(i, DOGParams()) for i in range(honest_set_size, node_count)]
 
-    for i in range(num_messages):
-        random_node = random.randint(0, node_count - 1)
-        topic_str = random.choice(topic_strs)
-        instructions[random_node].append(
-            script_instruction.Publish(
-                messageID=i,
-                topicID=topic_str,
-                messageSizeBytes=message_size,
-            )
-        )
-        elapsed_ms += interval_ms
-        for node_id in instructions:
-            instructions[node_id].append(
-                script_instruction.WaitUntil(elapsedMillis=elapsed_ms)
-            )
+    exp = Experiment(honest_nodes + malicious_nodes)
+    exp.activate_nodes(honest_nodes)
 
-    elapsed_ms += 30_000  # wait a bit more to allow all messages to flush
-    for node_id in instructions:
-        instructions[node_id].append(
-            script_instruction.WaitUntil(elapsedMillis=elapsed_ms)
-        )
-
-    return instructions
-
-
-def all_publish(
-        node_count: int, num_messages: int, message_size: int, topic_strs: List[str], interval_ms: int
-) -> dict[int, list[ScriptInstruction]]:
-    instructions = {node_id: [] for node_id in range(node_count)}
-
-    # Start at 120 seconds (2 minutes) to allow for setup time
-    elapsed_ms = 120_000
-    for node_id in instructions:
-        instructions[node_id].append(script_instruction.WaitUntil(elapsedMillis=elapsed_ms))
-    message_id = 0
-
-    for _ in range(num_messages):
-        for topic_str in topic_strs:
-            for node_id in range(node_count):
-                instructions[node_id].append(
-                    script_instruction.Publish(
-                        messageID=message_id,
-                        topicID=topic_str,
-                        messageSizeBytes=message_size,
-                    )
-                )
-                message_id += 1
-        elapsed_ms += interval_ms  # add interval for each subsequent message
-        for node_id in instructions:
-            instructions[node_id].append(
-                script_instruction.WaitUntil(elapsedMillis=elapsed_ms)
-            )
-
-    elapsed_ms += 120_000  # wait a bit more to allow all messages to flush
-    for node_id in instructions:
-        instructions[node_id].append(
-            script_instruction.WaitUntil(elapsedMillis=elapsed_ms)
-        )
-    
-    return instructions
-
-def random_publish_malicious_new_connections(
-        node_count: int,
-        topic_strs: List[str],
-) -> dict[int, list[ScriptInstruction]]:
-    instructions = {node_id: [] for node_id in range(node_count)}
-
+    topics = ["default"]
     interval_ms = 100
     message_size = 4300
-    honest_set_size = 50
-    messages_per_phase = 250
-    
-    honest_nodes = list(range(0, honest_set_size))
-    malicious_nodes = list(range(honest_set_size, node_count))[::-1]
-    
-    experiment_state = ExperimentState(
-        active_set = honest_nodes.copy(),
-        ready_set = malicious_nodes.copy()
-    )
-    
-    def random_peers(_node_id: int, _num_peers: int) -> list[int]:
-        candidates = [n for n in experiment_state.active_set if n != _node_id]
-        return random.sample(candidates, k=min(_num_peers, len(candidates)))
-    
-    def node_setup(_peers: list[int]) -> list[ScriptInstruction]:
-        setup_instructions = []
-        if experiment_state.elapsed_time_ms > 0:
-            setup_instructions.append(
-                script_instruction.WaitUntil(
-                    elapsedMillis=experiment_state.elapsed_time_ms
-                )
-            )
-        setup_instructions.append(
-            script_instruction.Connect(connectTo=_peers.copy())
-        )
-        for topic in topic_strs:  
-            setup_instructions.append(
-                script_instruction.SubscribeToTopic(topicID=topic)
-            )
-        
-        return setup_instructions
-    
-    for node_id in experiment_state.active_set:
-        instructions[node_id].extend(node_setup(random_peers(node_id, 8)))        
-
-    startup_phase = ExperimentPhase(
-        state=experiment_state,
-        warmup_time_ms=120_000,
-        cooldown_time_ms=0
-    )
-    startup_phase.apply(experiment_state, instructions)    
-        
+    messages_per_phase = 1000
     num_initial_phases = 20
     num_end_phases = 40
-    
-    warmup_time_ms = 60_000
-        
+    warmup_ms = 60_000
+
+    def random_peers(node_idx: int, num_peers: int) -> list[int]:
+        candidates = [n.idx for n in exp.state.active_set if n.idx != node_idx]
+        return random.sample(candidates, k=min(num_peers, len(candidates)))
+
+    for node in honest_nodes:
+        exp.setup_node(node, peers=random_peers(node.idx, 8), topics=topics)
+
+    # startup warmup
+    exp.apply_phase(exp.new_phase(warmup_ms=120_000))
+
     for _ in range(num_initial_phases):
-        phase = ExperimentPhase(
-            state=experiment_state,
-            warmup_time_ms=warmup_time_ms,
-            cooldown_time_ms=60_000
-        )
-        
-        message_ids = []
+        phase = exp.new_phase(warmup_ms=warmup_ms, cooldown_ms=60_000)
         for _ in range(messages_per_phase):
-            node_id = random.choice(honest_nodes)
-            topic = topic_strs[0]
-            message_id = phase.add_message(
-                delay_ms=interval_ms,
-                topic=topic,
-                node_id=node_id,
-                size_bytes=message_size
-            )
-            message_ids.append(message_id)
-        phase.apply(experiment_state, instructions)
-                             
+            node = random.choice(honest_nodes)
+            phase.add_message(delay_ms=interval_ms, node_id=node.idx, size_bytes=message_size)
+        exp.apply_phase(phase)
+
     # add malicious nodes
-    new_nodes = experiment_state.ready_set.copy()
-    experiment_state.active_set.extend(new_nodes)
-    experiment_state.ready_set.clear()
-    
-    # as many connections as possible
-    for new_node in new_nodes:
-        instructions[new_node].extend(node_setup(honest_nodes))
-        
+    exp.activate_nodes(malicious_nodes)
+    honest_idxs = [n.idx for n in honest_nodes]
+    for node in malicious_nodes:
+        exp.setup_node(node, peers=honest_idxs, topics=topics)
+
     for _ in range(num_end_phases):
-        phase = ExperimentPhase(
-            state=experiment_state,
-            warmup_time_ms=warmup_time_ms,
-            cooldown_time_ms=300_000
-        )
-        
-        message_ids = []
+        phase = exp.new_phase(warmup_ms=warmup_ms, cooldown_ms=300_000)
         for _ in range(messages_per_phase):
-            node_id = random.choice(honest_nodes)
-            topic = topic_strs[0]
-            message_id = phase.add_message(
-                delay_ms=interval_ms,
-                topic=topic,
-                node_id=node_id,
-                size_bytes=message_size
-            )
-            message_ids.append(message_id)
-        phase.apply(experiment_state, instructions)
-            
-    return instructions
+            node = random.choice(honest_nodes)
+            phase.add_message(delay_ms=interval_ms, node_id=node.idx, size_bytes=message_size)
+        exp.apply_phase(phase)
+
+    return exp
 
 
-def random_publish_node_churn(
-        node_count: int,
-        topic_strs: List[str],
-) -> dict[int, list[ScriptInstruction]]:
-    instructions = {node_id: [] for node_id in range(node_count)}
+def scenario_rolling_churn(protocol: str) -> Experiment:
+    active_set_size = 50
+    node_count = 200
+    nodes = make_nodes(protocol, node_count)
+    exp = Experiment(nodes)
 
+    initial_nodes = [n for n in nodes if n.idx < active_set_size]
+    exp.activate_nodes(initial_nodes)
+
+    topics = ["default"]
     interval_ms = 100
     message_size = 1024
-    active_set_size = 50
     messages_per_phase = 250
     replacements_per_phase = 10
-
-    experiment_state = ExperimentState(
-        active_set = list(range(0, active_set_size)),
-        ready_set = list(range(active_set_size, node_count))[::-1]
-    )
-    
     num_connections_per_node = 10
-    
-    def node_setup(_node_id: int) -> list[ScriptInstruction]:
-        setup_instructions = []
-        candidates = [n for n in experiment_state.active_set if n != _node_id]
-        connections = random.sample(candidates, k=min(num_connections_per_node, len(candidates)))
-        if experiment_state.elapsed_time_ms > 0:
-            setup_instructions.append(
-                script_instruction.WaitUntil(
-                    elapsedMillis=experiment_state.elapsed_time_ms
-                )
-            )
-        setup_instructions.append(
-            script_instruction.Connect(connectTo=connections)
-        )
-        for topic in topic_strs:  
-            setup_instructions.append(
-                script_instruction.SubscribeToTopic(topicID=topic)
-            )
-        
-        return setup_instructions
-    
-    for node_id in experiment_state.active_set:
-        instructions[node_id].extend(node_setup(node_id))        
 
-    startup_phase = ExperimentPhase(
-        state=experiment_state,
-        warmup_time_ms=120_000,
-        cooldown_time_ms=0
-    )
-    startup_phase.apply(experiment_state, instructions)    
-        
+    def random_peers(node_idx: int, num_peers: int) -> list[int]:
+        candidates = [n.idx for n in exp.state.active_set if n.idx != node_idx]
+        return random.sample(candidates, k=min(num_peers, len(candidates)))
+
+    for node in initial_nodes:
+        exp.setup_node(node, peers=random_peers(node.idx, num_connections_per_node), topics=topics)
+
+    # startup warmup
+    exp.apply_phase(exp.new_phase(warmup_ms=120_000))
+
     num_initial_phases = 30
-    num_replacement_phases = len(experiment_state.ready_set) // replacements_per_phase
+    num_replacement_phases = len(exp.state.ready_set) // replacements_per_phase
     num_end_phases = 15
-    
-    warmup_time_ms = 60_000
-    cooldown_time_ms = 60_000
-    
-    phase_info = []
-    
+    warmup_ms = 60_000
+    cooldown_ms = 60_000
+
+    def run_phase():
+        phase = exp.new_phase(warmup_ms=warmup_ms, cooldown_ms=cooldown_ms)
+        message_ids = []
+        for _ in range(messages_per_phase):
+            node = random.choice(exp.state.active_set)
+            message_id = phase.add_message(
+                delay_ms=interval_ms, node_id=node.idx, size_bytes=message_size,
+            )
+            message_ids.append(message_id)
+        exp.apply_phase(phase)
+
     # initial phases with no churn
     for _ in range(num_initial_phases):
-        phase = ExperimentPhase(
-            state=experiment_state,
-            warmup_time_ms=warmup_time_ms,
-            cooldown_time_ms=cooldown_time_ms
-        )
-        
-        message_ids = []
-        for _ in range(messages_per_phase):
-            node_id = random.choice(experiment_state.active_set)
-            topic = topic_strs[0]
-            message_id = phase.add_message(
-                delay_ms=interval_ms,
-                topic=topic,
-                node_id=node_id,
-                size_bytes=message_size
-            )
-            message_ids.append(message_id)
-            
-        phase_info.append({
-            "active_nodes": experiment_state.active_set.copy(),
-            "message_ids": message_ids
-        })
-        phase.apply(experiment_state, instructions)
-                        
-    for _ in range(num_replacement_phases):
-        # node replacements
-        for _ in range(min(replacements_per_phase, len(experiment_state.ready_set))):
-            experiment_state.active_set.pop(0)
-            replacement_node = experiment_state.ready_set.pop()
-            experiment_state.active_set.append(replacement_node)
-            instructions[replacement_node].extend(node_setup(replacement_node))
+        run_phase()
 
-        phase = ExperimentPhase(
-            state=experiment_state,
-            warmup_time_ms=warmup_time_ms,
-            cooldown_time_ms=cooldown_time_ms
-        )
-        
-        message_ids = []
-        for _ in range(messages_per_phase):
-            node_id = random.choice(experiment_state.active_set)
-            topic = topic_strs[0]
-            message_id = phase.add_message(
-                delay_ms=interval_ms,
-                topic=topic,
-                node_id=node_id,
-                size_bytes=message_size
+    # replacement phases
+    for _ in range(num_replacement_phases):
+        for _ in range(min(replacements_per_phase, len(exp.state.ready_set))):
+            oldest = exp.state.active_set[0]
+            exp.deactivate_nodes([oldest])
+            replacement = exp.state.ready_set[0]
+            exp.activate_nodes([replacement])
+            exp.setup_node(
+                replacement,
+                peers=random_peers(replacement.idx, num_connections_per_node),
+                topics=topics,
             )
-            message_ids.append(message_id)
-            
-        phase_info.append({
-            "active_nodes": experiment_state.active_set.copy(),
-            "message_ids": message_ids
-        })
-        phase.apply(experiment_state, instructions)
-        
+        run_phase()
+
     # final phases with no churn
     for _ in range(num_end_phases):
-        phase = ExperimentPhase(
-            state=experiment_state,
-            warmup_time_ms=warmup_time_ms,
-            cooldown_time_ms=cooldown_time_ms
-        )
-        
-        message_ids = []
-        for _ in range(messages_per_phase):
-            node_id = random.choice(experiment_state.active_set)
-            topic = topic_strs[0]
-            message_id = phase.add_message(
-                delay_ms=interval_ms,
-                topic=topic,
-                node_id=node_id,
-                size_bytes=message_size
-            )
-            message_ids.append(message_id)
-            
-        phase_info.append({
-            "active_nodes": experiment_state.active_set.copy(),
-            "message_ids": message_ids
-        })
-        phase.apply(experiment_state, instructions)
-     
-    with open("phase_info.json", "w") as f:
-        json.dump(phase_info, f, indent=2)
-            
-    return instructions
+        run_phase()
+
+    return exp

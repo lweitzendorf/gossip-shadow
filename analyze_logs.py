@@ -235,34 +235,19 @@ def process_logs(logs: Iterable[LogEntry], output_dir: str) -> None:
 def get_message_sources(test_dir: str) -> dict[int, int]:
     message_sources = {}
 
-    if os.path.exists(os.path.join(test_dir, "params.json")):
-        with open(os.path.join(test_dir, "params.json"), "r") as file:
-            instructions = json.load(file)
+    for file_name in os.listdir(os.path.join(test_dir, "params")):
+        if not file_name.startswith("node") or not file_name.endswith(".json"):
+            continue
 
-        for instruction in instructions["script"]:
-            if instruction["type"] == "ifNodeIDEquals":
-                node_id = instruction["nodeID"]
-                sub_instruction = instruction["instruction"]
-                if sub_instruction["type"] == "publish":
-                    message_sources[sub_instruction["messageID"]] = node_id
-            elif instruction["type"] == "ifNodeIDIn":
-                for sub_instruction in instruction["instructions"]:
-                    if sub_instruction["type"] == "publish":                
-                        for node_id in instruction["nodeIDs"]:
-                            message_sources[sub_instruction["messageID"]] = node_id
-    else:
-        for file_name in os.listdir(os.path.join(test_dir, "params")):
-            if not file_name.startswith("node") or not file_name.endswith(".json"):
-                continue
-            
-            with open(os.path.join(test_dir, "params", file_name), "r") as file:
-                instructions = json.load(file)
-                
-            node_id = int(file_name.removeprefix("node").removesuffix(".json"))
-            for instruction in instructions["script"]:
+        with open(os.path.join(test_dir, "params", file_name), "r") as file:
+            params = json.load(file)
+
+        node_id = int(file_name.removeprefix("node").removesuffix(".json"))
+        for script_instruction in params["script"]:
+            for instruction in script_instruction["instructions"]:
                 if instruction["type"] == "publish":
                     message_sources[instruction["messageID"]] = node_id
-                    
+
     return message_sources
 
 
@@ -313,7 +298,7 @@ def plot_total_network_traffic(plots_dir: str, snapshot_data: list[tuple[int, di
         delta_micros = elapsed_micros[j] - elapsed_micros[i]
         delta_bytes_up = total_bandwidth_up[j] - total_bandwidth_up[i]
         delta_bytes_down = total_bandwidth_down[j] - total_bandwidth_down[i]
-        if (delta_micros >= 1_000_000):
+        if (delta_micros >= 5_000_000):
             x.append(elapsed_micros[j] / 60_000_000) # minutes
             y_up.append(8 * delta_bytes_up / delta_micros) # Mbps
             y_down.append(8 * delta_bytes_down / delta_micros) # Mbps
@@ -321,14 +306,14 @@ def plot_total_network_traffic(plots_dir: str, snapshot_data: list[tuple[int, di
 
     plt.xlabel("Time (minutes)")
     plt.ylabel("Traffic (Mbps)")
-    plt.title("Network Traffic")
+    plt.title("Total Network Traffic")
 
+    # plt.plot(x, y_down, label="Download")
     plt.plot(x, y_up, label="Upload")
-    plt.plot(x, y_down, label="Download")
     
-    plt.legend()
+    # plt.legend()
     plt.xlim((x[0], x[-1]))
-    plt.ylim(bottom=0)
+    plt.ylim((0, 18))
 
     plt.savefig(os.path.join(plots_dir, "network_traffic.png"))
     plt.clf()
@@ -336,33 +321,50 @@ def plot_total_network_traffic(plots_dir: str, snapshot_data: list[tuple[int, di
 
 def plot_payload_traffic_by_node(plots_dir: str, snapshot_data: list[tuple[int, dict]]) -> None:
     x, y_up, y_down = [], {}, {}
+    
+    y_up["honest"] = []
+    y_up["malicious"] = []
+    y_down["honest"] = []
+    y_down["malicious"] = []
+    
     for i, (total_microseconds, data) in enumerate(snapshot_data):
         x.append(total_microseconds / 60_000_000)
-        for node_id, node_data in data["nodes"].items():
-            if node_id not in y_up:
-                y_up[node_id] = [0] * i
-                y_down[node_id] = [0] * i
-                
-            y_up[node_id].append(node_data["bytes_up"]["payload"]) 
-            y_down[node_id].append(node_data["bytes_down"]["payload"])  
+        
+        sum_malicious_up = sum([node_data["bytes_up"]["payload"] for node_id, node_data in data["nodes"].items() if int(node_id) >= 50])
+        sum_malicious_down = sum([node_data["bytes_down"]["payload"] for node_id, node_data in data["nodes"].items() if int(node_id) >= 50])
+        sum_honest_up = sum([node_data["bytes_up"]["payload"] for node_id, node_data in data["nodes"].items() if int(node_id) < 50])
+        sum_honest_down = sum([node_data["bytes_down"]["payload"] for node_id, node_data in data["nodes"].items() if int(node_id) < 50])
+        
+        y_up["malicious"].append(sum_malicious_up / 1_000_000_000) # GB
+        y_down["malicious"].append(sum_malicious_down / 1_000_000_000) # GB
+        y_up["honest"].append(sum_honest_up / 1_000_000_000) # GB
+        y_down["honest"].append(sum_honest_down / 1_000_000_000) # GB          
+            
             
     plt.xlabel("Time (minutes)")
-    plt.ylabel("Traffic (MB)")
+    plt.ylabel("Traffic (GB)")
 
-    plt.title("Cumulative Upload Traffic by Node")
-    for node_id, y in y_up.items():
-        plt.plot(x, y, label=node_id)
+    plt.title("Cumulative Upload Traffic by Node Type")
+    #for node_id, y in y_up.items():
+    #    plt.plot(x, y, label=node_id)
+    plt.plot(x, y_up["honest"], label="honest", color="tab:green")
+    plt.plot(x, y_up["malicious"], label="malicious", color="tab:red")
 
+    plt.legend()
     plt.savefig(os.path.join(plots_dir, "traffic_by_node_up.png"))
     plt.clf()
     
     plt.xlabel("Time (minutes)")
-    plt.ylabel("Traffic (MB)")
+    plt.ylabel("Traffic (GB)")
 
-    plt.title("Cumulative Download Traffic by Node")
-    for node_id, y in y_down.items():
-        plt.plot(x, y, label=node_id)
+    plt.title("Cumulative Download Traffic by Node Type")
+    # for node_id, y in y_down.items():
+    #    plt.plot(x, y, label=node_id)
 
+    plt.plot(x, y_down["honest"], label="honest", color="tab:green")
+    plt.plot(x, y_down["malicious"], label="malicious", color="tab:red")
+
+    plt.legend()
     plt.savefig(os.path.join(plots_dir, "traffic_by_node_down.png"))
     plt.clf()
 
@@ -423,10 +425,10 @@ def plot_message_delivery_percentiles(plots_dir: str, delivery_latencies_ms: lis
             
     colors = {
         100: "tab:green",
-         80: "tab:olive",
-         67: "tab:orange",
-         33: "tab:red",
-    }    
+        80: "tab:olive",
+        67: "tab:orange",
+        33: "tab:red",
+    }
     
     for percentile, color in colors.items():
         plt.plot(x, y[percentile], color=color, label=f"P{percentile}")
@@ -435,7 +437,7 @@ def plot_message_delivery_percentiles(plots_dir: str, delivery_latencies_ms: lis
     plt.legend(loc="upper left")
     
     plt.xlim(x[0], x[-1])
-    plt.ylim(bottom=0)
+    plt.ylim((0, 1700))
 
     plt.savefig(os.path.join(plots_dir, "message_latency_percentiles.png"))
     plt.clf()
@@ -502,13 +504,15 @@ def generate_plots(test_dir: str, data_dir: str, warmup_time: timedelta) -> str:
         
         if len(delivery_latencies_ms) > 1:
             msg_delivery_latencies.append((int(msg_id), delivery_latencies_ms))
+            
+    msg_delivery_latencies.sort(key=lambda x: x[0])
     
     plot_total_network_traffic(plots_dir, snapshot_data)
     plot_payload_traffic_by_node(plots_dir, snapshot_data)
     
     plot_median_delivery_histogram(plots_dir, msg_delivery_latencies)
     plot_message_delivery_times(plots_dir, msg_delivery_latencies, source_locations)
-    plot_message_delivery_percentiles(plots_dir, msg_delivery_latencies)
+    plot_message_delivery_percentiles(plots_dir, msg_delivery_latencies)    
 
     return plots_dir
 

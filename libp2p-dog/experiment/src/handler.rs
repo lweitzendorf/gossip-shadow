@@ -6,16 +6,14 @@ use libp2p::{
 use slog::{error, info, Logger};
 
 use crate::{
-    behaviour::{MyBehaviour, NetworkEvent},
-    state::State,
+    behaviour::{MyBehaviour, NetworkEvent}
 };
 
 async fn handle_dog_event(
     event: libp2p_dog::Event,
     _stderr_logger: Logger,
     _stdout_logger: Logger,
-    _swarm: &mut swarm::Swarm<MyBehaviour>,
-    state: &mut State,
+    _swarm: &mut swarm::Swarm<MyBehaviour>
 ) {
     match event {
         libp2p_dog::Event::TransactionReceived { transaction, propagation_source, .. } => {
@@ -25,7 +23,6 @@ async fn handle_dog_event(
                 "from" => propagation_source.to_string(),
                 "size" => transaction.data.len()
             );
-            state.transactions_received.push(transaction);
         }
         libp2p_dog::Event::TransactionSent { transaction, propagation_target, .. } => {
             info!(_stdout_logger, "Sent Message";
@@ -34,8 +31,33 @@ async fn handle_dog_event(
                 "to" => propagation_target.to_string(),
                 "size" => transaction.data.len(),
             );
-            state.transactions_received.push(transaction);
-        }
+        },
+        libp2p_dog::Event::HaveTxReceived { propagation_source, transaction_id } => {
+            info!(_stdout_logger, "Received HaveTx";
+                "from" => propagation_source.to_string(),
+                "tx_id" => transaction_id.to_string(),
+                "size" => transaction_id.0.len(),
+            );
+        },
+        libp2p_dog::Event::HaveTxSent { propagation_target, transaction_id } => {
+            info!(_stdout_logger, "Sent HaveTx";
+                "from" => propagation_target.to_string(),
+                "tx_id" => transaction_id.to_string(),
+                "size" => transaction_id.0.len(),
+            );
+        },
+        libp2p_dog::Event::ResetRouteReceived { propagation_source } => {
+            info!(_stdout_logger, "Received ResetRoute";
+                "from" => propagation_source.to_string(),
+                "size" => 0,
+            );
+        },
+        libp2p_dog::Event::ResetRouteSent { propagation_target } => {
+            info!(_stdout_logger, "Sent ResetRoute";
+                "from" => propagation_target.to_string(),
+                "size" => 0,
+            );
+        },
         libp2p_dog::Event::RoutingUpdated { disabled_routes } => {
             let routes = disabled_routes.into_iter().map(|i| i.to_string()).collect::<String>();
             info!(_stdout_logger, "Updated Routing Table"; "disabled_routes" => routes);
@@ -48,7 +70,6 @@ async fn handle_swarm_specific_event(
     _stderr_logger: Logger,
     _stdout_logger: Logger,
     _swarm: &mut swarm::Swarm<MyBehaviour>,
-    _state: &mut State,
 ) {
     match event {
         SwarmEvent::NewListenAddr {  .. } => {}
@@ -79,16 +100,14 @@ pub(crate) async fn handle_swarm_event(
     stderr_logger: Logger,
     stdout_logger: Logger,
     swarm: &mut swarm::Swarm<MyBehaviour>,
-    state: &mut State,
-
 ) {
     match event {
         SwarmEvent::Behaviour(NetworkEvent::Dog(event)) => {
-            handle_dog_event(event, stderr_logger, stdout_logger, swarm, state).await;
+            handle_dog_event(event, stderr_logger, stdout_logger, swarm).await;
         }
         _ => {
             // Swarm specific events
-            handle_swarm_specific_event(event, stderr_logger, stdout_logger, swarm, state).await;
+            handle_swarm_specific_event(event, stderr_logger, stdout_logger, swarm).await;
         }
     }
 }

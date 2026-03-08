@@ -58,8 +58,23 @@ func newScriptedNode(
 	return n, nil
 }
 
-func (n *scriptedNode) runInstruction(ctx context.Context, instruction ScriptInstruction) error {
-	// Process each script instruction
+func (n *scriptedNode) runScriptInstruction(ctx context.Context, si ScriptInstruction) error {
+	targetTime := n.startTime.Add(time.Duration(si.ElapsedMillis) * time.Millisecond)
+	waitTime := time.Until(targetTime)
+	if waitTime > 0 {
+		n.logger.Printf("Waiting %s (until elapsed: %dms)", waitTime, si.ElapsedMillis)
+		time.Sleep(waitTime)
+	}
+
+	for _, instruction := range si.Instructions {
+		if err := n.runInstruction(ctx, instruction); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (n *scriptedNode) runInstruction(ctx context.Context, instruction Instruction) error {
 	switch a := instruction.(type) {
 	case InitGossipSubInstruction:
 		psOpts := pubsubOptions(n.slogger, a.GossipSubParams)
@@ -76,13 +91,6 @@ func (n *scriptedNode) runInstruction(ctx context.Context, instruction ScriptIns
 			}
 		}
 		n.logger.Printf("Node %d connected to %d peers", n.nodeID, len(n.h.Network().Peers()))
-	case WaitUntilInstruction:
-		targetTime := n.startTime.Add(time.Duration(a.ElapsedMillis) * time.Millisecond)
-		waitTime := time.Until(targetTime)
-		if waitTime > 0 {
-			n.logger.Printf("Waiting %s (until elapsed: %dms)", waitTime, a.ElapsedMillis)
-			time.Sleep(waitTime)
-		}
 	case PublishInstruction:
 		topic, err := n.getTopic(a.TopicID)
 		if err != nil {
@@ -161,8 +169,8 @@ func RunExperiment(ctx context.Context, startTime time.Time, logger *log.Logger,
 		return err
 	}
 
-	for _, instruction := range params.Script {
-		if err := n.runInstruction(ctx, instruction); err != nil {
+	for _, si := range params.Script {
+		if err := n.runScriptInstruction(ctx, si); err != nil {
 			return fmt.Errorf("failed to run instruction: %w", err)
 		}
 	}

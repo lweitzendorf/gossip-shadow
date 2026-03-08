@@ -2,26 +2,13 @@ from __future__ import annotations
 
 from typing import List, Literal, TypeAlias, Union
 from pydantic import BaseModel
-from dataclasses import Field
-from dataclasses import field
 
-NodeID: TypeAlias = int
+NodeID: TypeAlias = int    
 
 
 class Connect(BaseModel):
     type: Literal["connect"] = "connect"
     connectTo: List[NodeID]
-
-
-class WaitUntil(BaseModel):
-    """
-    Implementations MUST wait until elapsedMillis is greater than or equal to the specified value.
-    They MUST NOT execute any proceeding instruction until the wait is complete.
-    They MUST still handle message delivery and forwarding as normal.
-    """
-
-    type: Literal["waitUntil"] = "waitUntil"
-    elapsedMillis: int  # Seconds elapsed since test start
 
 
 class Publish(BaseModel):
@@ -56,7 +43,7 @@ class InitGossipSub(BaseModel):
     """
 
     type: Literal["initGossipSub"] = "initGossipSub"
-    gossipSubParams: GossipSubParams
+    params: GossipSubParams
 
 
 class GossipSubParams(BaseModel):
@@ -141,9 +128,33 @@ class GossipSubParams(BaseModel):
     )
     # TTL in nanoseconds for IDONTWANT messages
     IDontWantMessageTTL: int | None = None
+    
+class InitDOG(BaseModel):
+    type: Literal["initDOG"] = "initDOG"
+    params: DOGParams
+    
+class DOGParams(BaseModel): 
+    max_transactions_per_rpc: int | None = None
+    connection_handler_queue_len: int | None = None
+    cache_time_sec: int | None = None
+    target_redundancy: float | None = None
+    redundancy_delta_percent: int | None = None
+    redundancy_interval_sec: int | None = None
+    connection_handler_publish_duration_sec: int | None = None
+    connection_handler_forward_duration_sec: int | None = None
+    deliver_own_transactions: bool | None = None
+    forward_transactions: bool | None = None
 
-
-ScriptInstruction = Union[
-    Connect, WaitUntil, Publish, SubscribeToTopic,
+InstructionParams = Union[
+    Connect, Publish, SubscribeToTopic,
     SetTopicValidationDelay, InitGossipSub
 ]
+
+class ScriptInstruction(BaseModel):
+    """
+    Implementations MUST wait until elapsedMillis is greater than or equal to the specified value.
+    They MUST NOT execute any proceeding instruction until the wait is complete.
+    They MUST still handle message delivery and forwarding as normal.
+    """
+    elapsedMillis: int
+    instructions: List[InstructionParams]

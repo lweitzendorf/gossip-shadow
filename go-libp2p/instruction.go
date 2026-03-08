@@ -7,8 +7,8 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
-// ScriptInstruction is an interface that represents any instruction in the script
-type ScriptInstruction interface {
+// Instruction is an interface that represents any instruction in the script
+type Instruction interface {
 	isInstruction()
 }
 
@@ -18,17 +18,7 @@ type ConnectInstruction struct {
 	ConnectTo []int  `json:"connectTo"`
 }
 
-// isInstruction implements the ScriptInstruction interface
 func (ConnectInstruction) isInstruction() {}
-
-// WaitUntilInstruction represents a wait until instruction in the script
-type WaitUntilInstruction struct {
-	Type          string `json:"type"`
-	ElapsedMillis int    `json:"elapsedMillis"`
-}
-
-// isInstruction implements the ScriptInstruction interface
-func (WaitUntilInstruction) isInstruction() {}
 
 // PublishInstruction represents a publish instruction in the script
 type PublishInstruction struct {
@@ -38,7 +28,6 @@ type PublishInstruction struct {
 	TopicID          string `json:"topicID"`
 }
 
-// isInstruction implements the ScriptInstruction interface
 func (PublishInstruction) isInstruction() {}
 
 // SubscribeToTopicInstruction represents a subscribe instruction in the script
@@ -47,7 +36,6 @@ type SubscribeToTopicInstruction struct {
 	TopicID string `json:"topicID"`
 }
 
-// isInstruction implements the ScriptInstruction interface
 func (SubscribeToTopicInstruction) isInstruction() {}
 
 // SetTopicValidationDelayInstruction represents a set topic validation delay instruction in the script
@@ -57,21 +45,18 @@ type SetTopicValidationDelayInstruction struct {
 	DelaySeconds float64 `json:"delaySeconds"`
 }
 
-// isInstruction implements the ScriptInstruction interface
 func (SetTopicValidationDelayInstruction) isInstruction() {}
 
 // InitGossipSubInstruction represents an instruction to initialize GossipSub with specific parameters
 type InitGossipSubInstruction struct {
 	Type            string                 `json:"type"`
-	GossipSubParams pubsub.GossipSubParams `json:"gossipSubParams"`
+	GossipSubParams pubsub.GossipSubParams `json:"params"`
 }
 
-// isInstruction implements the ScriptInstruction interface
 func (InitGossipSubInstruction) isInstruction() {}
 
-// UnmarshalScriptInstruction unmarshals a JSON object into the appropriate ScriptInstruction type
-func UnmarshalScriptInstruction(data []byte) (ScriptInstruction, error) {
-	// Unmarshal just the type field to determine which concrete type to use
+// unmarshalInstruction unmarshals a JSON object into the appropriate Instruction type
+func unmarshalInstruction(data []byte) (Instruction, error) {
 	var temp struct {
 		Type string `json:"type"`
 	}
@@ -79,17 +64,9 @@ func UnmarshalScriptInstruction(data []byte) (ScriptInstruction, error) {
 		return nil, err
 	}
 
-	// Unmarshal to the appropriate concrete type based on the instruction type
 	switch temp.Type {
 	case "connect":
 		var instruction ConnectInstruction
-		if err := json.Unmarshal(data, &instruction); err != nil {
-			return nil, err
-		}
-		return instruction, nil
-
-	case "waitUntil":
-		var instruction WaitUntilInstruction
 		if err := json.Unmarshal(data, &instruction); err != nil {
 			return nil, err
 		}
@@ -118,18 +95,15 @@ func UnmarshalScriptInstruction(data []byte) (ScriptInstruction, error) {
 
 	case "initGossipSub":
 		var tempInstruction struct {
-			Type            string          `json:"type"`
-			GossipSubParams json.RawMessage `json:"gossipSubParams"`
+			Type   string          `json:"type"`
+			Params json.RawMessage `json:"params"`
 		}
 		if err := json.Unmarshal(data, &tempInstruction); err != nil {
 			return nil, err
 		}
 
-		// Start with default parameters
 		params := pubsub.DefaultGossipSubParams()
-
-		// Only override values that are specified in the JSON
-		if err := json.Unmarshal(tempInstruction.GossipSubParams, &params); err != nil {
+		if err := json.Unmarshal(tempInstruction.Params, &params); err != nil {
 			return nil, err
 		}
 		return InitGossipSubInstruction{
@@ -142,25 +116,30 @@ func UnmarshalScriptInstruction(data []byte) (ScriptInstruction, error) {
 	}
 }
 
-// ScriptInstructions is a slice of ScriptInstruction that can be unmarshaled from JSON
-type ScriptInstructions []ScriptInstruction
+// ScriptInstruction groups instructions to execute at a specific elapsed time
+type ScriptInstruction struct {
+	ElapsedMillis int           `json:"elapsedMillis"`
+	Instructions  []Instruction `json:"-"`
+}
 
-// UnmarshalJSON implements json.Unmarshaler for ScriptInstructions
-func (si *ScriptInstructions) UnmarshalJSON(data []byte) error {
-	var rawInstructions []json.RawMessage
-	if err := json.Unmarshal(data, &rawInstructions); err != nil {
+// UnmarshalJSON implements json.Unmarshaler for ScriptInstruction
+func (si *ScriptInstruction) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ElapsedMillis int               `json:"elapsedMillis"`
+		Instructions  []json.RawMessage `json:"instructions"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 
-	instructions := make([]ScriptInstruction, len(rawInstructions))
-	for i, raw := range rawInstructions {
-		instruction, err := UnmarshalScriptInstruction(raw)
+	si.ElapsedMillis = raw.ElapsedMillis
+	si.Instructions = make([]Instruction, len(raw.Instructions))
+	for i, rawInstr := range raw.Instructions {
+		instr, err := unmarshalInstruction(rawInstr)
 		if err != nil {
 			return err
 		}
-		instructions[i] = instruction
+		si.Instructions[i] = instr
 	}
-
-	*si = instructions
 	return nil
 }
