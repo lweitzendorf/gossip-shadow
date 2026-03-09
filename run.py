@@ -2,27 +2,16 @@
 from dataclasses import asdict
 import argparse
 import json
-import requests
 import os
-import socket
 import random
 import datetime
 import subprocess
 from shadow_config import generate_shadow_config
+from alerts import Alerting
 import experiment
 import analyze_logs
 from tqdm import tqdm
 
-
-def send_discord_alert(message: str) -> None:
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
-    if not webhook_url:
-        return
-
-    _ = requests.post(webhook_url, json={
-        "username": socket.gethostname(),
-        "content": message
-    })
 
 def main():
     parser = argparse.ArgumentParser()
@@ -85,16 +74,19 @@ def main():
 
     subprocess.run(["make", "binaries"], check=True)
 
+    alerting = Alerting()
+
     stop_time = time_sec * 12 // 10 # stop shadow if it runs 20% longer than expected
     shadow_data_dir = os.path.join(args.output_dir, "shadow.data")
-    
+
     try:
+        alerting.info(f"Starting simulation run {experiment_name}")
         subprocess.run(
             ["shadow", "--parallelism", f"{args.parallelism}", "--stop-time", f"{stop_time}", "--progress", "true", "-d", shadow_data_dir, shadow_yaml_file_path],
             check=True,
         )
     except subprocess.CalledProcessError as e:
-        send_discord_alert(f"Simulation failed for {experiment_name}: {e}")
+        alerting.error(f"Simulation failed for {experiment_name}: {e}")
         return
 
     try:
@@ -108,10 +100,10 @@ def main():
         warmup_time = datetime.timedelta(minutes=2)
         analyze_logs.generate_plots(args.output_dir, data_dir, warmup_time)
     except Exception as e:
-        send_discord_alert(f"Log processing failed for {experiment_name}: {e}")
+        alerting.error(f"Log processing failed for {experiment_name}: {e}")
         return
 
-    send_discord_alert(f"Simulation run {experiment_name} complete!")
+    alerting.success(f"Simulation run {experiment_name} complete!")
 
 
 if __name__ == "__main__":
