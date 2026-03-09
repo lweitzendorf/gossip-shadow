@@ -151,6 +151,40 @@ def generate_shadow_config(
             node_types = [
                 NodeType("server", 10_000, 10_000, 100)
             ]
+            locations = [
+                Location("n_virginia", 1),
+                Location("canada", 1),
+                Location("n_california", 1),
+                Location("london", 1),
+                Location("oregon", 1),
+                Location("ireland", 1),
+                Location("frankfurt", 1),
+                Location("s_paulo", 1),
+                Location("tokyo", 1),
+                Location("mumbai", 1),
+                Location("sydney", 1),
+                Location("seoul", 1),
+                Location("singapore", 1),
+            ]
+            latency_matrix = [ # Shadow does not support 0 ms latency
+                [1, 7, 30, 38, 39, 33, 44, 58, 73, 93, 98, 87, 105],
+                [7, 1, 38, 39, 29, 35, 46, 63, 70, 94, 97, 85, 103],
+                [30, 38, 1, 68, 10, 68, 75, 88, 54, 116, 69, 67, 86],
+                [38, 39, 68, 1, 63, 5, 8, 94, 104, 56, 131, 118, 82],
+                [39, 29, 10, 63, 1, 59, 68, 88, 49, 109, 69, 63, 84],
+                [33, 35, 68, 5, 59, 1, 13, 88, 100, 61, 127, 114, 90],
+                [44, 46, 75, 8, 68, 13, 1, 101, 111, 60, 143, 109, 77],
+                [58, 63, 88, 94, 88, 88, 101, 1, 128, 151, 155, 142, 161],
+                [73, 70, 54, 104, 49, 100, 111, 128, 1, 60, 57, 16, 39],
+                [93, 94, 116, 56, 109, 61, 60, 151, 60, 1, 76, 57, 27],
+                [98, 97, 69, 131, 69, 127, 143, 155, 57, 76, 1, 69, 45],
+                [87, 85, 67, 118, 63, 114, 109, 142, 16, 57, 69, 1, 36],
+                [105, 103, 86, 82, 84, 90, 77, 161, 39, 27, 45, 36, 1],
+            ]
+            edges.clear()
+            for i, src in enumerate(locations):
+                for j, dst in enumerate(locations):
+                    edges.append(Edge(src, dst, latency_matrix[i][j]))
         case "med-bandwidth":
             node_types = [
                 NodeType("slownode", 20, 20, 100)

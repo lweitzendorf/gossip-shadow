@@ -64,6 +64,7 @@ class ExperimentPhase:
         self.cooldown_time_ms = cooldown_time_ms
         self._main_phase: dict[int, list[ScriptInstruction]] = defaultdict(list)
         self._main_phase_duration_ms: int = 0
+        self._active_ids: set[int] = {n.idx for n in state.active_set}
     
     def _get_main_phase_end_time_ms(self) -> int:
         return self.state.elapsed_time_ms + self.warmup_time_ms + self._main_phase_duration_ms
@@ -72,8 +73,7 @@ class ExperimentPhase:
         return self._get_main_phase_end_time_ms() + self.cooldown_time_ms
     
     def add_message(self, delay_ms: int, node_id: int, size_bytes: int, topic: str = "default") -> int:
-        active_ids = {n.idx for n in self.state.active_set}
-        assert node_id in active_ids, f"node {node_id} is not in the active set"
+        assert node_id in self._active_ids, f"node {node_id} is not in the active set"
         
         self._main_phase_duration_ms += delay_ms
         message_id = self.state.next_message_id
@@ -93,13 +93,13 @@ class ExperimentPhase:
     def _apply(self, instructions: dict[int, list[ScriptInstruction]]) -> None:
         for node in self.state.active_set:
             instructions[node.idx].extend(self._main_phase[node.idx])
-            if (self.cooldown_time_ms > 0) or (not self._main_phase[node.idx]):
-                instructions[node.idx].append(
-                    ScriptInstruction(
-                        elapsedMillis=self._get_end_time_ms(),
-                        instructions=[]
-                    )
+            # prevents nodes from shutting down before the end of the phase
+            instructions[node.idx].append(
+                ScriptInstruction(
+                    elapsedMillis=self._get_end_time_ms(),
+                    instructions=[]
                 )
+            )
         self.state.elapsed_time_ms = self._get_end_time_ms()
         
 class Experiment:
@@ -245,7 +245,7 @@ def scenario_two_cliques(protocol: str) -> Experiment:
 
 
 def scenario_faivre_30_tps(protocol: str) -> Experiment:
-    node_count = 1000
+    node_count = 32
     nodes = make_nodes(protocol, node_count)
     exp = Experiment(nodes)
     exp.activate_all()
@@ -257,14 +257,16 @@ def scenario_faivre_30_tps(protocol: str) -> Experiment:
     num_minutes = 5
     interval_ms = 33
     num_rounds = num_minutes * 60 * round(1000 / interval_ms)
-    message_size = 1024
+    message_size = 1000
 
     phase = exp.new_phase(warmup_ms=120_000, cooldown_ms=120_000)
     for _ in range(num_rounds):
         for i, node in enumerate(exp.state.active_set):
-            delay = interval_ms if i == 0 else 0
+            delay = interval_ms if (i == 0) else 0
             phase.add_message(
-                delay_ms=delay, node_id=node.idx, size_bytes=message_size,
+                delay_ms=delay,
+                node_id=node.idx,
+                size_bytes=message_size,
             )
     exp.apply_phase(phase)
 
