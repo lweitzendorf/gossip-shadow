@@ -6,14 +6,34 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	pubsub_pb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
+// workaround to get the message size from tracing events without having to 
+// modify the actual libp2p library code
 type gossipTracer struct {
-	logger *slog.Logger
+	logger   *slog.Logger
+	msgSizes sync.Map // message ID (string) -> data length (int)
+}
+
+func (g *gossipTracer) registerSize(data []byte) {
+	if len(data) >= 8 {
+		id := CalcID(data)
+		g.msgSizes.Store(id, len(data))
+	}
+}
+
+func (g *gossipTracer) getMessageSize(msgID []byte) int {
+	if v, ok := g.msgSizes.Load(string(msgID)); ok {
+		return v.(int)
+	}
+	return 0
 }
 
 func formatMessageID[S ~string | ~[]byte](msgID S) string {
@@ -44,7 +64,7 @@ func (g *gossipTracer) logMeta(action string, logger *slog.Logger, meta *pubsub_
 			action+" Message",
 			slog.String("topic", msg.GetTopic()),
 			slog.String("id", formatMessageID(msg.GetMessageID())),
-			slog.Int("size", 1024),
+			slog.Int("size", g.getMessageSize(msg.GetMessageID())),
 		)
 	}
 
@@ -144,7 +164,7 @@ func (g *gossipTracer) Trace(evt *pubsub_pb.TraceEvent) {
 			slog.Time("event_time", time.Unix(0, evt.GetTimestamp())),
 			slog.String("topic", publish.GetTopic()),
 			slog.String("id", formatMessageID(publish.GetMessageID())),
-			slog.Int("size", 1024),
+			slog.Int("size", g.getMessageSize(publish.GetMessageID())),
 		)
 	case pubsub_pb.TraceEvent_DELIVER_MESSAGE:
 		deliver := evt.GetDeliverMessage()
@@ -156,7 +176,7 @@ func (g *gossipTracer) Trace(evt *pubsub_pb.TraceEvent) {
 			slog.String("topic", deliver.GetTopic()),
 			slog.String("id", formatMessageID(deliver.GetMessageID())),
 			slog.String("from", peer.ID(deliver.GetReceivedFrom()).String()),
-			slog.Int("size", 1024),
+			slog.Int("size", g.getMessageSize(deliver.GetMessageID())),
 		)
 	case pubsub_pb.TraceEvent_ADD_PEER:
 		addPeer := evt.GetAddPeer()
@@ -178,3 +198,34 @@ func (g *gossipTracer) Trace(evt *pubsub_pb.TraceEvent) {
 		)
 	}
 }
+
+// RawTracer implementation — captures actual message sizes before EventTracer logs them.
+
+func (g *gossipTracer) RecvRPC(rpc *pubsub.RPC) {
+	for _, msg := range rpc.Publish {
+		g.registerSize(msg.Data)
+	}
+}
+
+func (g *gossipTracer) SendRPC(rpc *pubsub.RPC, p peer.ID) {
+	for _, msg := range rpc.Publish {
+		g.registerSize(msg.Data)
+	}
+}
+
+func (g *gossipTracer) DeliverMessage(msg *pubsub.Message) {
+	g.registerSize(msg.Data)
+}
+
+func (g *gossipTracer) AddPeer(peer.ID, protocol.ID)              {}
+func (g *gossipTracer) RemovePeer(peer.ID)                        {}
+func (g *gossipTracer) Join(string)                               {}
+func (g *gossipTracer) Leave(string)                              {}
+func (g *gossipTracer) Graft(peer.ID, string)                     {}
+func (g *gossipTracer) Prune(peer.ID, string)                     {}
+func (g *gossipTracer) ValidateMessage(*pubsub.Message)           {}
+func (g *gossipTracer) RejectMessage(*pubsub.Message, string)     {}
+func (g *gossipTracer) DuplicateMessage(*pubsub.Message)          {}
+func (g *gossipTracer) ThrottlePeer(peer.ID)                      {}
+func (g *gossipTracer) DropRPC(*pubsub.RPC, peer.ID)              {}
+func (g *gossipTracer) UndeliverableMessage(*pubsub.Message)      {}

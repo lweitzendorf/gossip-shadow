@@ -28,19 +28,22 @@ var (
 
 // pubsubOptions creates a list of options to configure our router with.
 func pubsubOptions(slogger *slog.Logger, params pubsub.GossipSubParams) []pubsub.Option {
-	tr := gossipTracer{logger: slogger.With("service", "gossipsub")}
+	tr := &gossipTracer{logger: slogger.With("service", "gossipsub")}
 	psOpts := []pubsub.Option{
 		pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
 		pubsub.WithNoAuthor(),
 		pubsub.WithMessageIdFn(func(pmsg *pubsubpb.Message) string {
-			return CalcID(pmsg.Data)
+			id := CalcID(pmsg.Data)
+			tr.msgSizes.Store(id, len(pmsg.Data))
+			return id
 		}),
 		// TODO: probably make these experiment parameters
 		pubsub.WithPeerOutboundQueueSize(600),
 		pubsub.WithValidateQueueSize(600),
 		pubsub.WithMaxMessageSize(10 * 1 << 20),
 		pubsub.WithGossipSubParams(params),
-		pubsub.WithEventTracer(&tr),
+		pubsub.WithEventTracer(tr),
+		pubsub.WithRawTracer(tr),
 	}
 
 	return psOpts

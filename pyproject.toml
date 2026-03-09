@@ -1,7 +1,7 @@
 [project]
-name = "pubsub-shadow"
+name = "gossip-shadow"
 version = "0.1.0"
-description = "Gossipsub interoperability simulation suite for different libp2p implementations."
+description = ""
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
