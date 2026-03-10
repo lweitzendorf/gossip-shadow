@@ -308,12 +308,12 @@ def plot_total_network_traffic(plots_dir: str, snapshot_data: list[tuple[int, di
     plt.ylabel("Traffic (Mbps)")
     plt.title("Total Network Traffic")
 
-    # plt.plot(x, y_down, label="Download")
+    plt.plot(x, y_down, label="Download")
     plt.plot(x, y_up, label="Upload")
     
-    # plt.legend()
+    plt.legend()
     plt.xlim((x[0], x[-1]))
-    plt.ylim((0, 18))
+    plt.ylim(bottom=0)
 
     plt.savefig(os.path.join(plots_dir, "network_traffic.png"))
     plt.clf()
@@ -322,49 +322,35 @@ def plot_total_network_traffic(plots_dir: str, snapshot_data: list[tuple[int, di
 def plot_payload_traffic_by_node(plots_dir: str, snapshot_data: list[tuple[int, dict]]) -> None:
     x, y_up, y_down = [], {}, {}
     
-    y_up["honest"] = []
-    y_up["malicious"] = []
-    y_down["honest"] = []
-    y_down["malicious"] = []
-    
     for i, (total_microseconds, data) in enumerate(snapshot_data):
         x.append(total_microseconds / 60_000_000)
         
-        sum_malicious_up = sum([node_data["bytes_up"]["payload"] for node_id, node_data in data["nodes"].items() if int(node_id) >= 50])
-        sum_malicious_down = sum([node_data["bytes_down"]["payload"] for node_id, node_data in data["nodes"].items() if int(node_id) >= 50])
-        sum_honest_up = sum([node_data["bytes_up"]["payload"] for node_id, node_data in data["nodes"].items() if int(node_id) < 50])
-        sum_honest_down = sum([node_data["bytes_down"]["payload"] for node_id, node_data in data["nodes"].items() if int(node_id) < 50])
+        for node_id, node_data in data["nodes"].items():
+            if node_id not in y_up:
+                y_up[node_id] = [0] * i
+                y_down[node_id] = [0] * i
         
-        y_up["malicious"].append(sum_malicious_up / 1_000_000_000) # GB
-        y_down["malicious"].append(sum_malicious_down / 1_000_000_000) # GB
-        y_up["honest"].append(sum_honest_up / 1_000_000_000) # GB
-        y_down["honest"].append(sum_honest_down / 1_000_000_000) # GB          
+            y_up[node_id].append(node_data["bytes_up"]["payload"] / 1_000_000) 
+            y_down[node_id].append(node_data["bytes_down"]["payload"]  / 1_000_000)         
             
             
     plt.xlabel("Time (minutes)")
-    plt.ylabel("Traffic (GB)")
+    plt.ylabel("Traffic (MB)")
 
-    plt.title("Cumulative Upload Traffic by Node Type")
-    #for node_id, y in y_up.items():
-    #    plt.plot(x, y, label=node_id)
-    plt.plot(x, y_up["honest"], label="honest", color="tab:green")
-    plt.plot(x, y_up["malicious"], label="malicious", color="tab:red")
+    plt.title("Cumulative Upload Traffic by Node")
+    for node_id, y in y_up.items():
+        plt.plot(x, y, label=node_id)
 
-    plt.legend()
     plt.savefig(os.path.join(plots_dir, "traffic_by_node_up.png"))
     plt.clf()
     
     plt.xlabel("Time (minutes)")
-    plt.ylabel("Traffic (GB)")
+    plt.ylabel("Traffic (MB)")
 
     plt.title("Cumulative Download Traffic by Node Type")
-    # for node_id, y in y_down.items():
-    #    plt.plot(x, y, label=node_id)
+    for node_id, y in y_down.items():
+        plt.plot(x, y, label=node_id)
 
-    plt.plot(x, y_down["honest"], label="honest", color="tab:green")
-    plt.plot(x, y_down["malicious"], label="malicious", color="tab:red")
-
-    plt.legend()
     plt.savefig(os.path.join(plots_dir, "traffic_by_node_down.png"))
     plt.clf()
 
@@ -392,7 +378,7 @@ def plot_message_delivery_times(plots_dir: str, delivery_latencies_ms: list[tupl
     plt.xscale('log')
     plt.xlabel("Time (seconds)")
     plt.xlim((min_latency, max_latency))
-    plt.ylim(0, 1)
+    plt.ylim(bottom=0)
     plt.legend(loc="upper left")
 
     plt.savefig(os.path.join(plots_dir, "message_latency.png"))
@@ -437,7 +423,7 @@ def plot_message_delivery_percentiles(plots_dir: str, delivery_latencies_ms: lis
     plt.legend(loc="upper left")
     
     plt.xlim(x[0], x[-1])
-    plt.ylim((0, 1700))
+    plt.ylim(bottom=0)
 
     plt.savefig(os.path.join(plots_dir, "message_latency_percentiles.png"))
     plt.clf()
