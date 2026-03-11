@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (stderr_logger, stdout_logger) = create_logger();
 
-    let mut swarm = swarm::new_swarm();
+    let mut swarm = swarm::new_swarm(&params.config);
     swarm.listen_on("/ip4/0.0.0.0/tcp/9000".parse()?)?;
 
     run_experiment(

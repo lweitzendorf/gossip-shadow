@@ -128,6 +128,7 @@ def generate_shadow_config(
     shadow_yaml_file_path: str,
     params_file_location: str,
 ):
+    global locations
     match network_type:
         case "uniform":
             node_types = [NodeType("node", 1024, 1024, 100)]         

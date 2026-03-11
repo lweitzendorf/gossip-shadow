@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from dataclasses import asdict
 import argparse
 import json
 import os
@@ -50,11 +49,13 @@ def main():
     print("Writing experiment params...")
     for node_id, node_params in tqdm(experiment_params.items()):
         with open(os.path.join(params_file_location, f"node{node_id}.json"), "w") as f:
-            d = asdict(node_params)
-            d["script"] = [
-                instruction.model_dump(exclude_none=True)
-                for instruction in node_params.script
-            ]
+            d = {
+                "config": node_params.config.model_dump(),
+                "script": [
+                    instruction.model_dump()
+                    for instruction in node_params.script
+                ]
+            }
             json.dump(d, f, indent=2)
 
     graph_file_path = os.path.join(args.output_dir, "graph.gml")
@@ -79,15 +80,17 @@ def main():
     stop_time = time_sec * 12 // 10 # stop shadow if it runs 20% longer than expected
     shadow_data_dir = os.path.join(args.output_dir, "shadow.data")
 
+    alerting.info(f"Starting simulation run {experiment_name}")
+
     try:
-        alerting.info(f"Starting simulation run {experiment_name}")
         subprocess.run(
             ["shadow", "--parallelism", f"{args.parallelism}", "--stop-time", f"{stop_time}", "--progress", "true", "-d", shadow_data_dir, shadow_yaml_file_path],
             check=True,
         )
+    except KeyboardInterrupt:
+        return alerting.warn(f"Simulation canceled for {experiment_name}")
     except subprocess.CalledProcessError as e:
-        alerting.error(f"Simulation failed for {experiment_name}: {e}")
-        return
+        return alerting.error(f"Simulation failed for {experiment_name}: {e}")
 
     try:
         logs = analyze_logs.parse_log_files(args.output_dir)
@@ -99,9 +102,10 @@ def main():
         print("Generating graphs...")
         warmup_time = datetime.timedelta(minutes=2)
         analyze_logs.generate_plots(args.output_dir, data_dir, warmup_time)
+    except KeyboardInterrupt:
+        return alerting.warn(f"Log processing canceled for {experiment_name}")
     except Exception as e:
-        alerting.error(f"Log processing failed for {experiment_name}: {e}")
-        return
+        return alerting.error(f"Log processing failed for {experiment_name}: {e}")
 
     alerting.success(f"Simulation run {experiment_name} complete!")
 

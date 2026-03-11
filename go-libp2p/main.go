@@ -63,6 +63,7 @@ func nodePrivKey(id int) crypto.PrivKey {
 }
 
 type ExperimentParams struct {
+	Config json.RawMessage     `json:"config"`
 	Script []ScriptInstruction `json:"script"`
 }
 
@@ -125,8 +126,21 @@ func main() {
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmicroseconds)
 	slogger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
+	gossipParams := pubsub.DefaultGossipSubParams()
+	if params.Config != nil {
+		if err := json.Unmarshal(params.Config, &gossipParams); err != nil {
+			panic(fmt.Errorf("failed to decode gossipsub config: %w", err))
+		}
+	}
+
+	psOpts := pubsubOptions(slogger, gossipParams)
+	ps, err := pubsub.NewGossipSub(ctx, h, psOpts...)
+	if err != nil {
+		panic(err)
+	}
+
 	connector := &ShadowConnector{}
-	err = RunExperiment(ctx, startTime, logger, slogger, h, nodeId, connector, params)
+	err = RunExperiment(ctx, startTime, logger, slogger, h, nodeId, connector, params, ps)
 	if err != nil {
 		panic(err)
 	}

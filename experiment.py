@@ -1,4 +1,3 @@
-import json
 import random
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -8,42 +7,41 @@ from typing import List, Dict, Set, Sequence, TypeAlias
 import networkx as nx
 
 import script_instruction
-from script_instruction import ScriptInstruction, GossipSubParams, DOGParams
+from script_instruction import ScriptInstruction, NodeConfigParams, GossipSubParams, DOGParams
 
 
 NodeID: TypeAlias = int
 
 @dataclass
 class ExperimentParams:
-    script: List[ScriptInstruction] = field(default_factory=list)
-    
+    config: NodeConfigParams
+    script: List[ScriptInstruction]
+
 class Node(ABC):
-    def __init__(self, idx: NodeID, binary: str) -> None:
+    def __init__(self, idx: NodeID, binary: str, config: NodeConfigParams) -> None:
         super().__init__()
         self.idx = idx
         self.binary = binary
-
-    def init_instructions(self) -> list:
-        return []
+        self.config = config
 
 class GossipSubNode(Node):
-    def __init__(self, idx: int, params: GossipSubParams) -> None:
-        super().__init__(idx, "go-libp2p/gossipsub-bin")
-        self.params = params
-
-    def init_instructions(self) -> list:
-        return [script_instruction.InitGossipSub(params=self.params)]
+    def __init__(self, idx: int, **params) -> None:
+        config = GossipSubParams(**params)
+        super().__init__(idx, "go-libp2p/gossipsub-bin", config)
 
 class DOGNode(Node):
-    def __init__(self, idx: int, params: DOGParams) -> None:
-        super().__init__(idx, "libp2p-dog/target/debug/experiment")
-        self.params = params
+    def __init__(self, idx: int, **params) -> None:
+        config = DOGParams(**params)
+        super().__init__(idx, "libp2p-dog/target/debug/experiment", config)
 
-class MaliciousDOGNode(Node):
-    def __init__(self, idx: int, params: DOGParams) -> None:
-        super().__init__(idx, "libp2p-dog-modified/target/debug/experiment")
-        self.params = params
-
+class MaliciousDOGNode(DOGNode):
+    def __init__(self, idx: int, **params) -> None:
+        params |= dict(
+            send_have_tx=False,
+            ignore_have_tx=True,
+            forward_transactions=False,
+        )
+        super().__init__(idx, **params)
     
 @dataclass
 class ExperimentState:
@@ -127,7 +125,6 @@ class Experiment:
         self.add_instruction(node.idx, ScriptInstruction(
             elapsedMillis=self.state.elapsed_time_ms,
             instructions=[
-                *node.init_instructions(),
                 script_instruction.Connect(connectTo=peers),
                 *[script_instruction.SubscribeToTopic(topicID=t) for t in topics]
             ]
@@ -145,17 +142,19 @@ class Experiment:
             for instrs in self._instructions.values() if instrs
         )
         time_sec = (time_ms + 999) // 1000
-        return {
-            nid: ExperimentParams(script=instrs)
-            for nid, instrs in self._instructions.items()
-        }, time_sec
+        nodes_by_idx = {n.idx: n for n in self.nodes}
+        result = {}
+        for nid, instrs in self._instructions.items():
+            node = nodes_by_idx[nid]
+            result[nid] = ExperimentParams(script=instrs, config=node.config)
+        return result, time_sec
         
 def make_nodes(protocol: str, count: int) -> list[Node]:
     match protocol:
         case "dog":
-            return [DOGNode(i, DOGParams()) for i in range(count)]
+            return [DOGNode(i) for i in range(count)]
         case "gossipsub":
-            return [GossipSubNode(i, GossipSubParams()) for i in range(count)]
+            return [GossipSubNode(i) for i in range(count)]
         case _:
             raise ValueError(f"Unknown protocol: {protocol}")
 
@@ -278,8 +277,8 @@ def scenario_malicious_new_connections(protocol: str) -> Experiment:
     malicious_set_size = 20
     node_count = honest_set_size + malicious_set_size
 
-    honest_nodes = [DOGNode(i, DOGParams()) for i in range(honest_set_size)]
-    malicious_nodes = [MaliciousDOGNode(i, DOGParams()) for i in range(honest_set_size, node_count)]
+    honest_nodes = [DOGNode(i) for i in range(honest_set_size)]
+    malicious_nodes = [MaliciousDOGNode(i) for i in range(honest_set_size, node_count)]
 
     exp = Experiment(honest_nodes + malicious_nodes)
     exp.activate_nodes(honest_nodes)

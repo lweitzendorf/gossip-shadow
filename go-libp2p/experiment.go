@@ -43,6 +43,7 @@ func newScriptedNode(
 	slogger *slog.Logger,
 	h host.Host,
 	connector HostConnector,
+	ps *pubsub.PubSub,
 ) (*scriptedNode, error) {
 	slogger.Info("PeerID", "id", h.ID(), "node_id", nodeID)
 
@@ -52,6 +53,7 @@ func newScriptedNode(
 		logger:    logger,
 		slogger:   slogger,
 		connector: connector,
+		pubsub:    ps,
 		startTime: startTime,
 		subCtx:    ctx,
 	}
@@ -76,13 +78,6 @@ func (n *scriptedNode) runScriptInstruction(ctx context.Context, si ScriptInstru
 
 func (n *scriptedNode) runInstruction(ctx context.Context, instruction Instruction) error {
 	switch a := instruction.(type) {
-	case InitGossipSubInstruction:
-		psOpts := pubsubOptions(n.slogger, a.GossipSubParams)
-		ps, err := pubsub.NewGossipSub(ctx, n.h, psOpts...)
-		if err != nil {
-			return err
-		}
-		n.pubsub = ps
 	case ConnectInstruction:
 		for _, targetNodeId := range a.ConnectTo {
 			err := n.connector.ConnectTo(ctx, n.h, targetNodeId)
@@ -163,8 +158,8 @@ func (n *scriptedNode) getTopic(topicStr string) (*pubsub.Topic, error) {
 	return t, nil
 }
 
-func RunExperiment(ctx context.Context, startTime time.Time, logger *log.Logger, slogger *slog.Logger, h host.Host, nodeId int, connector HostConnector, params ExperimentParams) error {
-	n, err := newScriptedNode(ctx, startTime, nodeId, logger, slogger, h, connector)
+func RunExperiment(ctx context.Context, startTime time.Time, logger *log.Logger, slogger *slog.Logger, h host.Host, nodeId int, connector HostConnector, params ExperimentParams, ps *pubsub.PubSub) error {
+	n, err := newScriptedNode(ctx, startTime, nodeId, logger, slogger, h, connector, ps)
 	if err != nil {
 		return err
 	}

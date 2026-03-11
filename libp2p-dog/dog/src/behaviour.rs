@@ -522,6 +522,10 @@ where
 
             self.redundancy_controller.incr_duplicate_txs_count();
 
+            if !self.config.send_have_tx() {
+                return;
+            }
+
             if self.redundancy_controller.is_have_tx_blocked() {
                 return;
             }
@@ -759,7 +763,7 @@ where
                         }
                     }
                 }
-                if !have_tx_ids.is_empty() {
+                if !have_tx_ids.is_empty() && !self.config.ignore_have_tx() {
                     self.handle_have_tx(have_tx_ids, &propagation_source);
                 }
                 if reset_route {

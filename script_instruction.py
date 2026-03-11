@@ -34,120 +34,71 @@ class SetTopicValidationDelay(BaseModel):
     delaySeconds: float
 
 
-class InitGossipSub(BaseModel):
-    """
-    InitGossipSub is an instruction that initializes the GossipSub protocol with the
-    given parameters.
-
-    It is undefined behavior to not have every node InitGossipSub before any other instruction.
-    """
-
-    type: Literal["initGossipSub"] = "initGossipSub"
-    params: GossipSubParams
-
-
 class GossipSubParams(BaseModel):
     # Overlay parameters
-    D: int | None = None  # Optimal degree for a GossipSub topic mesh
-    Dlo: int | None = None  # Lower bound on the number of peers in a topic mesh
-    Dhi: int | None = None  # Upper bound on the number of peers in a topic mesh
-    Dscore: int | None = None  # Number of high-scoring peers to retain when pruning
-    Dout: int | None = (
-        None  # Quota for outbound connections to maintain in a topic mesh
-    )
+    D: int = 6  # Optimal degree for a GossipSub topic mesh
+    Dlo: int = 5  # Lower bound on the number of peers in a topic mesh
+    Dhi: int = 12  # Upper bound on the number of peers in a topic mesh
+    Dscore: int = 4  # Number of high-scoring peers to retain when pruning
+    Dout: int = 2  # Quota for outbound connections to maintain in a topic mesh
 
     # Gossip parameters
-    HistoryLength: int | None = None  # Size of the message cache used for gossip
-    HistoryGossip: int | None = (
-        None  # Number of cached message IDs to advertise in IHAVE
-    )
-    Dlazy: int | None = (
-        None  # Minimum number of peers to emit gossip to at each heartbeat
-    )
-    # Factor affecting how many peers receive gossip
-    GossipFactor: float | None = None
-    GossipRetransmission: int | None = (
-        None  # Limit for IWANT requests before ignoring a peer
-    )
+    HistoryLength: int = 5  # Size of the message cache used for gossip
+    HistoryGossip: int = 3  # Number of cached message IDs to advertise in IHAVE
+    Dlazy: int = 6  # Minimum number of peers to emit gossip to at each heartbeat
+    GossipFactor: float = 0.25  # Factor affecting how many peers receive gossip
+    GossipRetransmission: int = 3  # Limit for IWANT requests before ignoring a peer
 
-    # Heartbeat parameters
-    HeartbeatInitialDelay: float | None = (
-        None  # Initial delay in nanonseconds before heartbeat timer begins
-    )
-    # Time between heartbeats in nanoseconds
-    HeartbeatInterval: float | None = None
-    SlowHeartbeatWarning: float | None = (
-        None  # Threshold for heartbeat processing warnings
-    )
+    # Heartbeat parameters (durations in nanoseconds)
+    HeartbeatInitialDelay: int = 100_000_000  # 100ms
+    HeartbeatInterval: int = 1_000_000_000  # 1s
+    SlowHeartbeatWarning: float = 0.1  # Ratio of HeartbeatInterval
 
-    # Fanout and pruning
-    FanoutTTL: float | None = None  # Time in nanoseconds to track fanout state
-    PrunePeers: int | None = None  # Number of peers to include in prune Peer eXchange
-    PruneBackoff: float | None = None  # Backoff time in nanoseconds for pruned peers
-    # Backoff time in nanoseconds after unsubscribing
-    UnsubscribeBackoff: float | None = None
+    # Fanout and pruning (durations in nanoseconds)
+    FanoutTTL: int = 60_000_000_000  # 60s
+    PrunePeers: int = 16  # Number of peers to include in prune Peer eXchange
+    PruneBackoff: int = 60_000_000_000  # 60s
+    UnsubscribeBackoff: int = 10_000_000_000  # 10s
 
-    # Connection management
-    Connectors: int | None = None  # Number of active connection attempts for PX peers
-    # Maximum number of pending connections
-    MaxPendingConnections: int | None = None
-    # Timeout in nanoseconds for connection attempts
-    ConnectionTimeout: float | None = None
-    DirectConnectTicks: int | None = (
-        None  # Heartbeat ticks for reconnecting direct peers
-    )
-    DirectConnectInitialDelay: float | None = (
-        None  # Initial delay before connecting to direct peers (nanoseconds)
-    )
+    # Connection management (durations in nanoseconds)
+    Connectors: int = 8  # Number of active connection attempts for PX peers
+    MaxPendingConnections: int = 128
+    ConnectionTimeout: int = 30_000_000_000  # 30s
+    DirectConnectTicks: int = 300  # Heartbeat ticks for reconnecting direct peers
+    DirectConnectInitialDelay: int = 1_000_000_000  # 1s
 
     # Opportunistic grafting
-    OpportunisticGraftTicks: int | None = (
-        None  # Ticks between opportunistic grafting attempts
-    )
-    OpportunisticGraftPeers: int | None = (
-        None  # Number of peers to opportunistically graft
-    )
-    GraftFloodThreshold: float | None = (
-        None  # Time threshold in nanoseconds for GRAFT flood detection
-    )
+    OpportunisticGraftTicks: int = 60  # Heartbeat ticks between grafting attempts
+    OpportunisticGraftPeers: int = 2
+    GraftFloodThreshold: int = 10_000_000_000  # 10s
 
     # Message control
-    MaxIHaveLength: int | None = None  # Maximum messages in an IHAVE message
-    MaxIHaveMessages: int | None = (
-        None  # Maximum IHAVE messages to accept per heartbeat
-    )
-    # Maximum messages in an IDONTWANT message
-    MaxIDontWantLength: int | None = None
-    MaxIDontWantMessages: int | None = (
-        None  # Maximum IDONTWANT messages to accept per heartbeat
-    )
-    # Time in nanoseconds to wait for IWANT followup
-    IWantFollowupTime: float | None = None
-    IDontWantMessageThreshold: int | None = (
-        None  # Size threshold for IDONTWANT messages
-    )
-    # TTL in nanoseconds for IDONTWANT messages
-    IDontWantMessageTTL: int | None = None
+    MaxIHaveLength: int = 5000  # Maximum message IDs in an IHAVE
+    MaxIHaveMessages: int = 10  # Maximum IHAVE messages per heartbeat
+    MaxIDontWantLength: int = 10  # Maximum message IDs in an IDONTWANT
+    MaxIDontWantMessages: int = 1000  # Maximum IDONTWANT messages per heartbeat
+    IWantFollowupTime: int = 3_000_000_000  # 3s
+    IDontWantMessageThreshold: int = 1024  # Size threshold in bytes
+    IDontWantMessageTTL: int = 3  # TTL in heartbeats
     
-class InitDOG(BaseModel):
-    type: Literal["initDOG"] = "initDOG"
-    params: DOGParams
-    
-class DOGParams(BaseModel): 
-    max_transactions_per_rpc: int | None = None
-    connection_handler_queue_len: int | None = None
-    cache_time_sec: int | None = None
-    target_redundancy: float | None = None
-    redundancy_delta_percent: int | None = None
-    redundancy_interval_sec: int | None = None
-    connection_handler_publish_duration_sec: int | None = None
-    connection_handler_forward_duration_sec: int | None = None
-    deliver_own_transactions: bool | None = None
-    forward_transactions: bool | None = None
+class DOGParams(BaseModel):
+    max_transactions_per_rpc: int | None = None  # None means no limit
+    connection_handler_queue_len: int = 5000
+    cache_time_sec: int = 30
+    target_redundancy: float = 1.0
+    redundancy_delta_percent: int = 10
+    redundancy_interval_sec: int = 1
+    connection_handler_publish_duration_sec: int = 5
+    connection_handler_forward_duration_sec: int = 1
+    deliver_own_transactions: bool = False
+    forward_transactions: bool = True
+    send_have_tx: bool = True
+    ignore_have_tx: bool = False
 
+NodeConfigParams = Union[GossipSubParams, DOGParams]
 InstructionParams = Union[
     Connect, Publish, SubscribeToTopic,
-    SetTopicValidationDelay, InitGossipSub
+    SetTopicValidationDelay,
 ]
 
 class ScriptInstruction(BaseModel):

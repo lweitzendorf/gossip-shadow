@@ -29,6 +29,8 @@ pub struct Config {
     connection_handler_forward_duration: Duration,
     deliver_own_transactions: bool,
     forward_transactions: bool,
+    send_have_tx: bool,
+    ignore_have_tx: bool,
 }
 
 impl Config {
@@ -100,6 +102,18 @@ impl Config {
     pub fn forward_transactions(&self) -> bool {
         self.forward_transactions
     }
+
+    /// Whether the node should send HaveTx messages when receiving duplicate transactions.
+    /// The default is `true`.
+    pub fn send_have_tx(&self) -> bool {
+        self.send_have_tx
+    }
+
+    /// Whether the node should ignore received HaveTx messages (i.e. not disable routes).
+    /// The default is `false`.
+    pub fn ignore_have_tx(&self) -> bool {
+        self.ignore_have_tx
+    }
 }
 
 impl Default for Config {
@@ -136,6 +150,8 @@ impl Default for ConfigBuilder {
                 connection_handler_forward_duration: Duration::from_secs(1),
                 deliver_own_transactions: false,
                 forward_transactions: true,
+                send_have_tx: true,
+                ignore_have_tx: false,
             },
         }
     }
@@ -234,6 +250,20 @@ impl ConfigBuilder {
     /// This is used if a node just wants to be a "client" in the network.
     pub fn forward_transactions(&mut self, forward_transactions: bool) -> &mut Self {
         self.config.forward_transactions = forward_transactions;
+        self
+    }
+
+    /// Whether the node should send HaveTx messages when receiving duplicate transactions.
+    /// The default is `true`.
+    pub fn send_have_tx(&mut self, send_have_tx: bool) -> &mut Self {
+        self.config.send_have_tx = send_have_tx;
+        self
+    }
+
+    /// Whether the node should ignore received HaveTx messages (i.e. not disable routes).
+    /// The default is `false`.
+    pub fn ignore_have_tx(&mut self, ignore_have_tx: bool) -> &mut Self {
+        self.config.ignore_have_tx = ignore_have_tx;
         self
     }
 

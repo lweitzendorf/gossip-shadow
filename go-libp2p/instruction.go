@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
 // Instruction is an interface that represents any instruction in the script
@@ -47,14 +45,6 @@ type SetTopicValidationDelayInstruction struct {
 
 func (SetTopicValidationDelayInstruction) isInstruction() {}
 
-// InitGossipSubInstruction represents an instruction to initialize GossipSub with specific parameters
-type InitGossipSubInstruction struct {
-	Type            string                 `json:"type"`
-	GossipSubParams pubsub.GossipSubParams `json:"params"`
-}
-
-func (InitGossipSubInstruction) isInstruction() {}
-
 // unmarshalInstruction unmarshals a JSON object into the appropriate Instruction type
 func unmarshalInstruction(data []byte) (Instruction, error) {
 	var temp struct {
@@ -92,24 +82,6 @@ func unmarshalInstruction(data []byte) (Instruction, error) {
 			return nil, err
 		}
 		return instruction, nil
-
-	case "initGossipSub":
-		var tempInstruction struct {
-			Type   string          `json:"type"`
-			Params json.RawMessage `json:"params"`
-		}
-		if err := json.Unmarshal(data, &tempInstruction); err != nil {
-			return nil, err
-		}
-
-		params := pubsub.DefaultGossipSubParams()
-		if err := json.Unmarshal(tempInstruction.Params, &params); err != nil {
-			return nil, err
-		}
-		return InitGossipSubInstruction{
-			Type:            tempInstruction.Type,
-			GossipSubParams: params,
-		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown instruction type: %s", temp.Type)

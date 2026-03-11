@@ -10,6 +10,7 @@ import requests
 class _Severity(Enum):
     INFO = "info"
     SUCCESS = "success"
+    WARN = "warn"
     ERROR = "error"
 
 
@@ -27,6 +28,7 @@ class DiscordBackend(AlertBackend):
     _ANSI_COLORS = {
         _Severity.INFO:    "\u001b[34m",  # blue
         _Severity.SUCCESS: "\u001b[32m",  # green
+        _Severity.WARN:    "\u001b[33m",  # yellow
         _Severity.ERROR:   "\u001b[31m",  # red
     }
     _ANSI_RESET = "\u001b[0m"
@@ -52,6 +54,7 @@ class SlackBackend(AlertBackend):
     _COLORS = {
         _Severity.INFO:    "#2196F3",
         _Severity.SUCCESS: "#4CAF50",
+        _Severity.WARN:    "#FF9800",
         _Severity.ERROR:   "#F44336",
     }
 
@@ -76,6 +79,7 @@ class TelegramBackend(AlertBackend):
     _PREFIXES = {
         _Severity.INFO:    "\u2139\ufe0f",
         _Severity.SUCCESS: "\u2705",
+        _Severity.WARN:    "\u26a0\ufe0f",
         _Severity.ERROR:   "\u274c",
     }
 
@@ -117,6 +121,10 @@ class Alerting:
     def success(self, message: str) -> None:
         for backend in self.backends:
             backend.send(message, _Severity.SUCCESS)
+
+    def warn(self, message: str) -> None:
+        for backend in self.backends:
+            backend.send(message, _Severity.WARN)
 
     def error(self, message: str) -> None:
         for backend in self.backends:

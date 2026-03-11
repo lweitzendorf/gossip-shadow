@@ -16,8 +16,8 @@ Dockerfile
 docker-compose.yml
 backup
 timelines
-experiment-results/**
 __pycache__
 *.data/
 *.json
 **/.idea/
+uv.lock

@@ -1,15 +1,13 @@
 use crate::behaviour::MyBehaviour;
+use crate::script_instruction::DOGParams;
 use libp2p::{noise, tcp, yamux, SwarmBuilder};
 use std::time::Duration;
 use libp2p_dog::ConfigBuilder;
 
-pub(crate) fn new_swarm() -> libp2p::Swarm<MyBehaviour> {
-    let config = ConfigBuilder::default()
-        .target_redundancy(1.0)
-        .redundancy_delta_percent(10)
-        .redundancy_interval(Duration::from_secs(1))
-        .build()
-        .expect("Failed to build DOG config");
+pub(crate) fn new_swarm(dog_params: &DOGParams) -> libp2p::Swarm<MyBehaviour> {
+    let mut builder = ConfigBuilder::default();
+    dog_params.apply(&mut builder);
+    let config = builder.build().expect("Failed to build DOG config");
 
     SwarmBuilder::with_new_identity()
         .with_tokio()
