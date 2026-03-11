@@ -15,14 +15,14 @@ NodeID: TypeAlias = int
 @dataclass
 class MessageInfo:
     message_id: int
-    source: int
+    source: NodeID
     size_bytes: int
     topic: str
     time_ms: int
 
 @dataclass
 class PhaseInfo:
-    nodes: list[int]
+    nodes: list[NodeID]
     messages: list[MessageInfo]
 
 @dataclass
@@ -38,17 +38,17 @@ class Node(ABC):
         self.config = config
 
 class GossipSubNode(Node):
-    def __init__(self, idx: int, **params) -> None:
+    def __init__(self, idx: NodeID, **params) -> None:
         config = GossipSubParams(**params)
         super().__init__(idx, "go-libp2p/gossipsub-bin", config)
 
 class DOGNode(Node):
-    def __init__(self, idx: int, **params) -> None:
+    def __init__(self, idx: NodeID, **params) -> None:
         config = DOGParams(**params)
         super().__init__(idx, "libp2p-dog/target/debug/experiment", config)
 
 class MaliciousDOGNode(DOGNode):
-    def __init__(self, idx: int, **params) -> None:
+    def __init__(self, idx: NodeID, **params) -> None:
         params |= dict(
             send_have_tx=False,
             ignore_have_tx=True,
@@ -73,9 +73,9 @@ class ExperimentPhase:
         self.state = state
         self.warmup_time_ms = warmup_time_ms
         self.cooldown_time_ms = cooldown_time_ms
-        self._main_phase: dict[int, list[ScriptInstruction]] = defaultdict(list)
+        self._main_phase: dict[NodeID, list[ScriptInstruction]] = defaultdict(list)
         self._main_phase_duration_ms: int = 0
-        self._active_ids: set[int] = {n.idx for n in state.active_set}
+        self._active_ids: set[NodeID] = {n.idx for n in state.active_set}
         self._messages: list[MessageInfo] = []
     
     def _get_main_phase_end_time_ms(self) -> int:
@@ -84,7 +84,7 @@ class ExperimentPhase:
     def _get_end_time_ms(self) -> int:
         return self._get_main_phase_end_time_ms() + self.cooldown_time_ms
     
-    def add_message(self, delay_ms: int, node_id: int, size_bytes: int, topic: str = "default") -> int:
+    def add_message(self, delay_ms: int, node_id: NodeID, size_bytes: int, topic: str = "default") -> int:
         assert node_id in self._active_ids, f"node {node_id} is not in the active set"
         
         self._main_phase_duration_ms += delay_ms
@@ -128,7 +128,7 @@ class Experiment:
     def __init__(self, nodes: Sequence[Node]) -> None:
         self.nodes = sorted(nodes, key=lambda n: n.idx)
         self.state = ExperimentState(ready_set=list(nodes))
-        self._instructions: dict[int, list[ScriptInstruction]] = defaultdict(list)
+        self._instructions: dict[NodeID, list[ScriptInstruction]] = defaultdict(list)
         self._phases: list[PhaseInfo] = []
 
     def activate_nodes(self, nodes: Sequence[Node]) -> None:
@@ -143,10 +143,13 @@ class Experiment:
         for node in nodes:
             self.state.active_set.remove(node)
 
-    def add_instruction(self, node_idx: int, instruction: ScriptInstruction) -> None:
+    def add_instruction(self, node_idx: NodeID, instruction: ScriptInstruction) -> None:
         self._instructions[node_idx].append(instruction)
 
-    def setup_node(self, node: Node, peers: list[int], topics: list[str]) -> None:
+    def setup_node(self, node: Node, peers: list[NodeID], topics: list[str]) -> None:
+        active_ids = {n.idx for n in self.state.active_set}
+        invalid = set(peers) - active_ids
+        assert not invalid, f"peers {invalid} are not in the active set"
         self.add_instruction(node.idx, ScriptInstruction(
             elapsedMillis=self.state.elapsed_time_ms,
             instructions=[
@@ -161,7 +164,7 @@ class Experiment:
     def apply_phase(self, phase: ExperimentPhase) -> None:
         self._phases.append(phase._apply(self._instructions))
 
-    def finalize(self) -> tuple[dict[int, ExperimentParams], list[PhaseInfo], int]:
+    def finalize(self) -> tuple[dict[NodeID, ExperimentParams], list[PhaseInfo], int]:
         time_ms = max(
             instrs[-1].elapsedMillis
             for instrs in self._instructions.values() if instrs
@@ -316,7 +319,7 @@ def scenario_malicious_new_connections(protocol: str) -> Experiment:
     num_end_phases = 40
     warmup_ms = 60_000
 
-    def random_peers(node_idx: int, num_peers: int) -> list[int]:
+    def random_peers(node_idx: NodeID, num_peers: int) -> list[NodeID]:
         candidates = [n.idx for n in exp.state.active_set if n.idx != node_idx]
         return random.sample(candidates, k=min(num_peers, len(candidates)))
 
@@ -365,7 +368,7 @@ def scenario_rolling_churn(protocol: str) -> Experiment:
     replacements_per_phase = 10
     num_connections_per_node = 10
 
-    def random_peers(node_idx: int, num_peers: int) -> list[int]:
+    def random_peers(node_idx: NodeID, num_peers: int) -> list[NodeID]:
         candidates = [n.idx for n in exp.state.active_set if n.idx != node_idx]
         return random.sample(candidates, k=min(num_peers, len(candidates)))
 
