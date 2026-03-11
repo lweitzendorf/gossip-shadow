@@ -139,8 +139,6 @@ def generate_shadow_config(
                 NodeType("supernode", 1024, 1024, 50),
                 NodeType("fullnode", 32, 32, 50)
             ]
-        case "random":
-            raise NotImplementedError("random network not implemented yet")
         case "real":
             node_types = [
                 NodeType("supernode", 10_000, 10_000, 5),

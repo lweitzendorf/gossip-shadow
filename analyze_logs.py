@@ -233,22 +233,14 @@ def process_logs(logs: Iterable[LogEntry], output_dir: str) -> None:
 
 
 def get_message_sources(test_dir: str) -> dict[int, int]:
-    message_sources = {}
+    with open(os.path.join(test_dir, "phases.json"), "r") as f:
+        phases = json.load(f)["phases"]
 
-    for file_name in os.listdir(os.path.join(test_dir, "params")):
-        if not file_name.startswith("node") or not file_name.endswith(".json"):
-            continue
-
-        with open(os.path.join(test_dir, "params", file_name), "r") as file:
-            params = json.load(file)
-
-        node_id = int(file_name.removeprefix("node").removesuffix(".json"))
-        for script_instruction in params["script"]:
-            for instruction in script_instruction["instructions"]:
-                if instruction["type"] == "publish":
-                    message_sources[instruction["messageID"]] = node_id
-
-    return message_sources
+    return {
+        msg["message_id"]: msg["source"]
+        for phase in phases
+        for msg in phase["messages"]
+    }
 
 
 def get_message_source_locations(test_dir: str) -> dict[int, str]:
@@ -468,30 +460,52 @@ def get_snapshot_data(data_dir: str, warmup_time: timedelta) -> list[tuple[int, 
     
     return sorted(snapshot_data.items())
 
-
-def generate_plots(test_dir: str, data_dir: str, warmup_time: timedelta) -> str:
-    plots_dir = os.path.join(test_dir, "plots")
-    os.makedirs(plots_dir, exist_ok=True)
-
-    source_locations = get_message_source_locations(test_dir)
-    snapshot_data = get_snapshot_data(data_dir, warmup_time)
-    
+def get_message_latencies(test_dir: str, data_dir: str) -> list[tuple[int, list[float]]]:
     with open(os.path.join(data_dir, "messages.json"), 'r') as f:
         message_data = json.load(f)
-    
+
+    with open(os.path.join(test_dir, "phases.json"), "r") as f:
+        phases = json.load(f)["phases"]
+
+    # message_id -> phase index, phase index -> active node set
+    msg_phase: dict[int, int] = {}
+    phase_nodes: list[set[int]] = []
+    for i, phase in enumerate(phases):
+        phase_nodes.append(set(phase["nodes"]))
+        for msg in phase["messages"]:
+            msg_phase[msg["message_id"]] = i
+
     msg_delivery_latencies: list[tuple[int, list[float]]] = []
 
-    for msg_id, msg_data in tqdm(message_data.items(), desc="Calculating message delivery times"):        
+    for msg_id, msg_data in tqdm(message_data.items(), desc="Calculating message delivery times"):
         send_ts = parser.isoparse(msg_data["sent"])
-        delivery_times = [parser.isoparse(ts) for ts in msg_data["received"].values()]
+        pi = msg_phase.get(int(msg_id))
+        active_nodes = phase_nodes[pi] if pi is not None else None
+        delivery_times = [
+            parser.isoparse(ts)
+            for node_id, ts in msg_data["received"].items()
+            if active_nodes is None or int(node_id) in active_nodes
+        ]
         delivery_times.sort()
-        delivery_latencies = [ts - send_ts for ts in delivery_times if ts > send_ts]  # TODO: use active set info
-        delivery_latencies_ms = [t.total_seconds() * 1000 for t in delivery_latencies]
-        
+        delivery_latencies_ms = [
+            (ts - send_ts).total_seconds() * 1000
+            for ts in delivery_times if ts > send_ts
+        ]
+
         if len(delivery_latencies_ms) > 1:
             msg_delivery_latencies.append((int(msg_id), delivery_latencies_ms))
-            
+
     msg_delivery_latencies.sort(key=lambda x: x[0])
+    return msg_delivery_latencies
+
+
+def generate_plots(test_dir: str, data_dir: str, warmup_time: timedelta) -> str:
+    source_locations = get_message_source_locations(test_dir)
+    snapshot_data = get_snapshot_data(data_dir, warmup_time)
+    msg_delivery_latencies = get_message_latencies(test_dir, data_dir)
+    
+    plots_dir = os.path.join(test_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
     
     plot_total_network_traffic(plots_dir, snapshot_data)
     plot_payload_traffic_by_node(plots_dir, snapshot_data)

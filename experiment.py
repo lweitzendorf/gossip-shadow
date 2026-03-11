@@ -22,10 +22,6 @@ class MessageInfo:
 
 @dataclass
 class PhaseInfo:
-    start_time_ms: int
-    end_time_ms: int
-    warmup_time_ms: int
-    cooldown_time_ms: int
     nodes: list[int]
     messages: list[MessageInfo]
 
@@ -124,14 +120,7 @@ class ExperimentPhase:
                     instructions=[]
                 )
             )
-        info = PhaseInfo(
-            start_time_ms=self.state.elapsed_time_ms,
-            end_time_ms=self._get_end_time_ms(),
-            warmup_time_ms=self.warmup_time_ms,
-            cooldown_time_ms=self.cooldown_time_ms,
-            nodes=sorted(self._active_ids),
-            messages=self._messages,
-        )
+        info = PhaseInfo(nodes=sorted(self._active_ids), messages=self._messages)
         self.state.elapsed_time_ms = self._get_end_time_ms()
         return info
         
