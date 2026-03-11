@@ -13,6 +13,23 @@ from script_instruction import ScriptInstruction, NodeConfigParams, GossipSubPar
 NodeID: TypeAlias = int
 
 @dataclass
+class MessageInfo:
+    message_id: int
+    source: int
+    size_bytes: int
+    topic: str
+    time_ms: int
+
+@dataclass
+class PhaseInfo:
+    start_time_ms: int
+    end_time_ms: int
+    warmup_time_ms: int
+    cooldown_time_ms: int
+    nodes: list[int]
+    messages: list[MessageInfo]
+
+@dataclass
 class ExperimentParams:
     config: NodeConfigParams
     script: List[ScriptInstruction]
@@ -63,6 +80,7 @@ class ExperimentPhase:
         self._main_phase: dict[int, list[ScriptInstruction]] = defaultdict(list)
         self._main_phase_duration_ms: int = 0
         self._active_ids: set[int] = {n.idx for n in state.active_set}
+        self._messages: list[MessageInfo] = []
     
     def _get_main_phase_end_time_ms(self) -> int:
         return self.state.elapsed_time_ms + self.warmup_time_ms + self._main_phase_duration_ms
@@ -82,13 +100,21 @@ class ExperimentPhase:
             topicID=topic,
             messageSizeBytes=size_bytes,
         )
+        time_ms = self._get_main_phase_end_time_ms()
         self._main_phase[node_id].append(ScriptInstruction(
-            elapsedMillis=self._get_main_phase_end_time_ms(),
+            elapsedMillis=time_ms,
             instructions=[publish_instruction]
+        ))
+        self._messages.append(MessageInfo(
+            message_id=message_id,
+            source=node_id,
+            size_bytes=size_bytes,
+            topic=topic,
+            time_ms=time_ms,
         ))
         return message_id
             
-    def _apply(self, instructions: dict[int, list[ScriptInstruction]]) -> None:
+    def _apply(self, instructions: dict[int, list[ScriptInstruction]]) -> PhaseInfo:
         for node in self.state.active_set:
             instructions[node.idx].extend(self._main_phase[node.idx])
             # prevents nodes from shutting down before the end of the phase
@@ -98,13 +124,23 @@ class ExperimentPhase:
                     instructions=[]
                 )
             )
+        info = PhaseInfo(
+            start_time_ms=self.state.elapsed_time_ms,
+            end_time_ms=self._get_end_time_ms(),
+            warmup_time_ms=self.warmup_time_ms,
+            cooldown_time_ms=self.cooldown_time_ms,
+            nodes=sorted(self._active_ids),
+            messages=self._messages,
+        )
         self.state.elapsed_time_ms = self._get_end_time_ms()
+        return info
         
 class Experiment:
     def __init__(self, nodes: Sequence[Node]) -> None:
         self.nodes = sorted(nodes, key=lambda n: n.idx)
         self.state = ExperimentState(ready_set=list(nodes))
         self._instructions: dict[int, list[ScriptInstruction]] = defaultdict(list)
+        self._phases: list[PhaseInfo] = []
 
     def activate_nodes(self, nodes: Sequence[Node]) -> None:
         for node in nodes:
@@ -134,9 +170,9 @@ class Experiment:
         return ExperimentPhase(self.state, warmup_ms, cooldown_ms)
 
     def apply_phase(self, phase: ExperimentPhase) -> None:
-        phase._apply(self._instructions)
+        self._phases.append(phase._apply(self._instructions))
 
-    def finalize(self) -> tuple[dict[int, ExperimentParams], int]:
+    def finalize(self) -> tuple[dict[int, ExperimentParams], list[PhaseInfo], int]:
         time_ms = max(
             instrs[-1].elapsedMillis
             for instrs in self._instructions.values() if instrs
@@ -147,7 +183,7 @@ class Experiment:
         for nid, instrs in self._instructions.items():
             node = nodes_by_idx[nid]
             result[nid] = ExperimentParams(script=instrs, config=node.config)
-        return result, time_sec
+        return result, self._phases, time_sec
         
 def make_nodes(protocol: str, count: int) -> list[Node]:
     match protocol:

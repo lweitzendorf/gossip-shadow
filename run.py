@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import dataclasses
 import json
 import os
 import random
@@ -40,7 +41,7 @@ def main():
 
     print("Generating experiment params...")
     exp = experiment.scenario(args.protocol, args.scenario)
-    experiment_params, time_sec = exp.finalize()
+    experiment_params, phases, time_sec = exp.finalize()
     binary_paths = [node.binary for node in exp.nodes]
 
     params_file_location = os.path.join(os.getcwd(), args.output_dir, "params")
@@ -57,6 +58,10 @@ def main():
                 ]
             }
             json.dump(d, f, indent=2)
+
+    info_file_path = os.path.join(args.output_dir, "phases.json")
+    with open(info_file_path, "w") as f:
+        json.dump({"phases": [dataclasses.asdict(p) for p in phases]}, f, indent=2)
 
     graph_file_path = os.path.join(args.output_dir, "graph.gml")
     shadow_yaml_file_path = os.path.join(args.output_dir, "shadow.yaml")
