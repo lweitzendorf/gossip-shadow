@@ -67,6 +67,18 @@ uv run analyze_logs.py -d <output-dir> --use-existing-data
 | `-w`, `--warmup-time` | `120` | Warmup seconds to exclude from plots |
 | `--use-existing-data` | off | Skip log parsing, use previously parsed data |
 
+## Alerting
+
+Simulation lifecycle events (start, completion, failure, cancellation) can be sent to Discord, Slack, and/or Telegram. Backends are auto-detected from environment variables — if none are set, alerting is silently disabled.
+
+| Environment Variable | Backend |
+|---|---|
+| `DISCORD_WEBHOOK_URL` | Discord incoming webhook |
+| `SLACK_WEBHOOK_URL` | Slack incoming webhook |
+| `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Telegram Bot API |
+
+All messages include the machine hostname for identification. Multiple backends can be active at the same time.
+
 ## Output structure
 
 ```
